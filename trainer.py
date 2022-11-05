@@ -57,7 +57,8 @@ class Trainer():
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=lr_decay_period, gamma=lr_decay_gamma, verbose=True)
         
         # self.criterion = ContrastiveLoss(temperature=0.1)
-        self.criterion = SoftNearestNeighborsLoss()
+        # self.criterion = SoftNearestNeighborsLoss()
+        self.criterion = nn.BCEWithLogitsLoss()
         # self.criterion = losses.ContrastiveLoss()
 
         # prep statistics
@@ -76,9 +77,10 @@ class Trainer():
         i = 0
         pbar = tqdm.tqdm(self.train_dataloader)
         for x, y in pbar:
-            x, y = x.to(self.device), y.to(self.device)
+            x = [_x.to(self.device) for _x in x]
+            y = y.to(self.device)
             self.optimizer.zero_grad()
-            out = self.model(x)
+            out = self.model(*x)
             loss = self.criterion(out, y)
             loss.backward()
             loss = loss.item()
@@ -103,8 +105,9 @@ class Trainer():
         with torch.no_grad():
             pbar = tqdm.tqdm(self.val_dataloader)
             for x, y in pbar:
-                x, y = x.to(self.device), y.to(self.device)
-                out = self.model(x)
+                x = [_x.to(self.device) for _x in x]
+                y = y.to(self.device)
+                out = self.model(*x)
                 loss = self.criterion(out, y).item()
                 avg_loss += loss
                 i += 1
