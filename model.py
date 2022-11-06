@@ -1,7 +1,9 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torchaudio.transforms as T
+import torchvision.transforms as TV
+import torchaudio.transforms as TA
+import torchaudio.functional as F
 
 from utils import exponential_linspace_int, count_parameters
 import architectures
@@ -10,34 +12,38 @@ import architectures
 class AudioPipeline(nn.Module):
     def __init__(
         self,
-        input_len_s=1.,
+        input_len_s: float=1.,
+        n_mel: int=256,
+        use_augmentation: bool=False,
         input_freq=8000,
         resample_freq=8000,
         n_fft=2048,
-        n_mel=256,
     ):
         super().__init__()
         
         self.input_len_s = input_len_s
         self.resample_freq = resample_freq
         self.n_mel = n_mel
+        self.use_aug = use_augmentation
         
-        self.resample = T.Resample(orig_freq=input_freq, new_freq=resample_freq)
-        self.spec = T.Spectrogram(n_fft=n_fft, power=2, hop_length=int(n_mel * input_len_s / (2 * 32000 / resample_freq)))
+        self.resample = TA.Resample(orig_freq=input_freq, new_freq=resample_freq)
+        self.spec = TA.Spectrogram(n_fft=n_fft, power=2, hop_length=int(n_mel * resample_freq / (input_len_s * 72000)))
         self.spec_aug = torch.nn.Sequential(
-            T.TimeStretch(np.random.rand() * 0.2 + 0.9, fixed_rate=True),  # random time stretch in (0.9, 1.1)
-            T.FrequencyMasking(freq_mask_param=20),
-            T.TimeMasking(time_mask_param=20),
+            TA.TimeStretch(np.random.rand() * 0.2 + 0.9, fixed_rate=True),  # random time stretch in (0.9, 1.1)
+            TA.FrequencyMasking(freq_mask_param=20),
+            TA.TimeMasking(time_mask_param=20),
         )
-        self.mel_scale = T.MelScale(n_mels=n_mel, sample_rate=resample_freq, n_stft=n_fft // 2 + 1)
-        self.to_log = T.AmplitudeToDB()
+        self.mel_scale = TA.MelScale(n_mels=n_mel, sample_rate=resample_freq, n_stft=n_fft // 2 + 1)
+        self.to_log = TA.AmplitudeToDB()
+        self.resize = TV.Resize((n_mel, n_mel))
 
     def forward(self, waveform: torch.Tensor) -> torch.Tensor:
         resampled = self.resample(waveform)  # resample the input
         spec = self.spec(resampled)  # convert to power spectrogram
-        spec = self.spec_aug(spec)  # apply SpecAugment
+        if self.use_aug: spec = self.spec_aug(spec)  # apply SpecAugment
         mel = self.mel_scale(spec)  # convert to mel scale
         mel = self.to_log(mel)  # convert to log-mel scale
+        mel = self.resize(mel)  # resize to square (should be close to square anyway)
         return resampled, mel
 
 class SpeakerEmbedding(nn.Module):
@@ -192,8 +198,6 @@ class SpeakerEnergy(nn.Module):
         self.spec_head_1.append(nn.Flatten(1, 3))
         self.spec_head_1 = nn.Sequential(*self.spec_head_1)
         
-        
-        
         # second head        
         # head to inference over spectrogram via 2D convolutions
         spec_channels = exponential_linspace_int(start=1, end=spec_nchan, num=spec_depth + 1)
@@ -264,3 +268,133 @@ class SpeakerEnergy(nn.Module):
             'state_dict': self.state_dict()   # the model params
         }
         torch.save(params, path)
+    
+class SpeakerContextModel(nn.Module):
+    def __init__(self,
+                 hidden_dim: int,
+                 body_type: str,
+                 pooling_type: str,
+                 
+                 context_mel_size: int,
+                 context_depth: int,
+                 context_nchan: int,
+                 context_pool_every: int,
+                 context_pool_size: int,
+                 
+                 query_mel_size: int,
+                 query_depth: int,
+                 query_nchan: int,
+                 query_pool_every: int,
+                 query_pool_size: int,
+                 
+                 body_depth: int
+                 ):
+        super().__init__()
+        
+        assert body_type in ['linear', 'transformer']
+        assert pooling_type in ['max', 'average', 'attention'] 
+        
+        pools = {'max': architectures.MaxPool2D,
+                'average': architectures.AvgPool2D,
+                'attention': architectures.AttentionPool2D}
+        
+        self.hidden_dim = hidden_dim
+        
+        self.args = {'hidden_dim': hidden_dim,
+                    'body_type': body_type,
+                    'pooling_type': pooling_type,
+                    'context_mel_size':  context_mel_size,
+                    'context_depth': context_depth,
+                    'context_nchan': context_nchan,
+                    'context_pool_every': context_pool_every,
+                    'context_pool_size': context_pool_size,
+                    'query_mel_size': query_mel_size,
+                    'query_depth': query_depth,
+                    'query_nchan': query_nchan,
+                    'query_pool_every': query_pool_every,
+                    'query_pool_size': query_pool_size,
+                    'body_depth': body_depth}
+        
+        # context head    
+        # head to inference over spectrogram via 2D convolutions
+        context_channels = exponential_linspace_int(start=1, end=context_nchan, num=context_depth + 1)
+        self.context_head = []
+        for i in range(context_depth):
+            in_chan, out_chan = context_channels[i: i + 2]
+            layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3))]
+            if (i + 1) % context_pool_every == 0:
+                layer.append(pools[pooling_type](out_chan, context_pool_size))
+            layer.append(nn.ReLU())
+            self.context_head.extend(layer)
+        self.context_head.append(nn.Flatten(1, 3))
+        self.context_head = nn.Sequential(*self.context_head)
+        
+        # query head        
+        # head to inference over spectrogram via 2D convolutions
+        query_channels = exponential_linspace_int(start=1, end=query_nchan, num=query_depth + 1)
+        self.query_head = []
+        for i in range(query_depth):
+            in_chan, out_chan = query_channels[i: i + 2]
+            layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3))]
+            if (i + 1) % query_pool_every == 0:
+                layer.append(pools[pooling_type](out_chan, query_pool_size))
+            layer.append(nn.ReLU())
+            self.query_head.extend(layer)
+        self.query_head.append(nn.Flatten(1, 3))
+        self.query_head = nn.Sequential(*self.query_head)
+        
+        # figure out conv tower output dims and project
+        test_c, test_q = torch.zeros(3, 1, context_mel_size, context_mel_size), torch.zeros(3, 1, query_mel_size, query_mel_size)
+        context_out_dim = self.context_head(test_c).shape[1]  # find output dim of context conv tower
+        context_mid_dim = (context_out_dim + self.hidden_dim) // 2  # find middle dim for projection
+        self.context_head.append(nn.Sequential(nn.Linear(context_out_dim, context_mid_dim), nn.ReLU(), nn.Linear(context_mid_dim, self.hidden_dim), nn.ReLU()))
+        query_out_dim = self.query_head(test_q).shape[1]  # find output dim of conv tower
+        query_mid_dim = (query_out_dim + self.hidden_dim) // 2  # find middle dim for projection
+        self.query_head.append(nn.Sequential(nn.Linear(query_out_dim, query_mid_dim), nn.ReLU(), nn.Linear(query_mid_dim, self.hidden_dim), nn.ReLU()))
+        del test_c, test_q
+        
+        # use body to bring down to final output dimension
+        body_dims = exponential_linspace_int(2 * self.hidden_dim, 1, body_depth + 1)
+        self.body = [nn.BatchNorm1d(2 * self.hidden_dim), nn.Dropout(0.2)]
+        for i in range(body_depth):
+            in_dim, out_dim = body_dims[i: i + 2]
+            layer = [nn.Linear(in_dim, out_dim), nn.ReLU()]
+            self.body.extend(layer)
+        self.body[-1] = nn.Flatten(0)  # remove last ReLU
+        self.body = nn.Sequential(*self.body)
+
+    def forward(self, sc, sq):
+        # get resampled waveform and spectrograms
+        # _, sc = self.context_pipe(context)  
+        # _, sq = self.query_pipe(query)
+        
+        # from librosa import display; import matplotlib.pyplot as plt; display.specshow(s.detach().numpy()[0], x_axis='time', y_axis='log'); plt.show()  # view spectrograms
+        
+        # get output from spectrogram head
+        sc = self.context_head(sc)  
+        sq = self.query_head(sq)  
+        cat = torch.cat((sc, sq), dim=-1)
+        out = self.body(cat)  # project to embedding dimension
+        return out
+    
+    @staticmethod
+    def load(model_path: str):
+        """ 
+        Load the model from a file.
+        """
+        params = torch.load(model_path)
+        model = SpeakerEnergy(**params['args'])
+        model.load_state_dict(params['state_dict'])
+        return model
+
+    def save(self, path: str):
+        """ 
+        Save the model to a file.
+        """
+
+        params = {
+            'args': self.args,   # args to remake the model object
+            'state_dict': self.state_dict()   # the model params
+        }
+        torch.save(params, path)
+        
