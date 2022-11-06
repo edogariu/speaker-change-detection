@@ -6,7 +6,8 @@ import tqdm
 
 from utils import count_parameters
 from losses import ContrastiveLoss, SoftNearestNeighborsLoss
-from pytorch_metric_learning import losses
+
+CRITERION = nn.BCEWithLogitsLoss() # ContrastiveLoss(temperature=0.1), SoftNearestNeighborsLoss()
 
 class Trainer():
     def __init__(self, 
@@ -55,11 +56,7 @@ class Trainer():
         self.model.train().to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), initial_lr, weight_decay=weight_decay)
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=lr_decay_period, gamma=lr_decay_gamma, verbose=True)
-        
-        # self.criterion = ContrastiveLoss(temperature=0.1)
-        # self.criterion = SoftNearestNeighborsLoss()
-        self.criterion = nn.BCEWithLogitsLoss()
-        # self.criterion = losses.ContrastiveLoss()
+        self.criterion = CRITERION
 
         # prep statistics
         self.train_losses = {}
@@ -79,6 +76,7 @@ class Trainer():
         for x, y in pbar:
             x = [_x.to(self.device) for _x in x]
             y = y.to(self.device)
+
             self.optimizer.zero_grad()
             out = self.model(*x)
             loss = self.criterion(out, y)

@@ -7,8 +7,8 @@ if __name__ == '__main__':
     # ------------------------------------- hyperparameters -------------------------------------------------
 
     model_name = 'test'
-    batch_size = 64
-    trainer_args = {'initial_lr': 0.006,
+    batch_size = 256
+    trainer_args = {'initial_lr': 0.02,
                     'lr_decay_period': 1,
                     'lr_decay_gamma': 0.7,
                     'weight_decay': 0.0002}
@@ -47,19 +47,19 @@ if __name__ == '__main__':
     #               }
 
     # context
-    model_args = {'hidden_dim': 96,
+    model_args = {'hidden_dim': 200,
                   'body_type': 'linear',
-                  'pooling_type': 'max',
+                  'pooling_type': 'attention',
                   
                   'context_mel_size': 128,
-                  'context_depth': 5,
-                  'context_nchan': 64,
+                  'context_depth': 6,
+                  'context_nchan': 256,
                   'context_pool_every': 1,
                   'context_pool_size': 2,
                   
-                  'query_mel_size': 64,
-                  'query_depth': 4,  # spectrogram head
-                  'query_nchan': 32,
+                  'query_mel_size': 128,
+                  'query_depth': 5,  # spectrogram head
+                  'query_nchan': 72,
                   'query_pool_every': 1,
                   'query_pool_size': 2,
                   
@@ -72,8 +72,6 @@ if __name__ == '__main__':
     # model = SpeakerEnergy(**model_args)
     model = SpeakerContextModel(**model_args)
 
-    print('preparing datasets')
-    
     # train_dataset = VCTKDataset('train')
     # val_dataset = VCTKDataset('val')
     # train_dataset = PairedDataset('train', 0.3)
@@ -81,8 +79,8 @@ if __name__ == '__main__':
     train_dataset = ContextDataset('train', 0.3)
     val_dataset = ContextDataset('val', 0.3)
     
-    train_dataloader = train_dataset.get_dataloader(batch_size, num_workers=8)
-    val_dataloader = val_dataset.get_dataloader(batch_size, num_workers=4)
+    train_dataloader = train_dataset.get_dataloader(batch_size)
+    val_dataloader = val_dataset.get_dataloader(batch_size)
 
     print('training')
     trainer = Trainer(model_name, model, train_dataloader, val_dataloader, **trainer_args)

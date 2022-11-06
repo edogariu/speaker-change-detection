@@ -8,7 +8,7 @@ from scipy.io import wavfile
 from collections import defaultdict
 import pickle; import dill
 
-from model import AudioPipeline
+from utils import CONTEXT_DURATION, SAMPLE_RATE
 
 SPLIT_INTERVALS = {'train': 0.8,  # intervals for each split (note that split occurs by speakers here, since that is what we hope to generalize over)
                    'val': 0.2,
@@ -242,41 +242,45 @@ class ContextDataset(D.Dataset):
         self.labels = []
         self.id_strs = []
         print(f'Constructing {split} dataset!')
-        for id, path, id_str in tqdm.tqdm(zip(self.df['ids'], self.df['paths'], self.df['id_strs']), total=len(self.df)):
+        for id, path, id_str in zip(self.df['ids'], self.df['paths'], self.df['id_strs']):
             if id in speakers_by_split[split]: 
                 self.paths.append(path)
                 self.labels.append(id)
                 self.id_strs.append(id_str)
-        self.speaker_to_context = pickle.load(open('data/cache/metadata.pkl', 'rb'))
+        self.speaker_to_context = dill.load(open('data/cache/metadata.pkl', 'rb'))
         self.length = len(self.paths)
         
-        self.context_pipe = AudioPipeline(input_len_s=4, n_mel=128, use_augmentation=False)
-        self.query_pipe = AudioPipeline(input_len_s=1, n_mel=64, use_augmentation=True)
-        
+        self.context = pickle.load(open('data/cache/contexts.pkl', 'rb'))
+
     def __len__(self):
         return self.length
     
     def __getitem__(self, index: int):
         path = self.paths[index]
         id_str = self.id_strs[index]
-
-        query = wavfile.read(f'data/VCTK/{path}')[1]
         
+        query = wavfile.read(f'data/VCTK/{path}')[1]
+
         if np.random.rand() < self.prob:
             speaker = self.speaker_to_context[id_str]
             rand_path = id_str + '_' + speaker[list(speaker.keys())[np.random.randint(len(speaker))]]['sentence_id'] + '_cache.pkl'
-            context = pickle.load(open(f'data/cache/{rand_path}', 'rb'))['audio_voice_only'][:, 0]
+            context = self.context[rand_path]
             comp = 1.
         else:
             rand_index = np.random.randint(len(self.speaker_to_context))
             rand_id = list(self.speaker_to_context.keys())[rand_index]
             speaker = self.speaker_to_context[rand_id]
             rand_path = rand_id + '_' + speaker[list(speaker.keys())[np.random.randint(len(speaker))]]['sentence_id'] + '_cache.pkl'
-            context = pickle.load(open(f'data/cache/{rand_path}', 'rb'))['audio_voice_only'][:, 0]
+            context = self.context[rand_path]
             comp = float(id_str == rand_id)
-        if len(context) < 8000: context = torch.zeros(1, self.context_pipe.n_mel, self.context_pipe.n_mel)
-        else: _, context = self.context_pipe(torch.tensor(context).reshape(1, -1))
-        _, query = self.query_pipe(torch.tensor(query).reshape(1, -1))
+
+        idx_range = len(context) - int(CONTEXT_DURATION * SAMPLE_RATE)
+        if idx_range < 0:
+            context = np.pad(context, (0, -idx_range))
+        else:
+            rand_index = np.random.randint(idx_range)
+            context = context[rand_index: int(CONTEXT_DURATION * SAMPLE_RATE) + rand_index]
+
         return (context, query), comp
     
     def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
