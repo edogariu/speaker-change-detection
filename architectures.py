@@ -3,6 +3,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops.layers.torch import Rearrange
 
+class ResBlock(nn.Module):
+    def __init__(self, chan, stride=1):
+        super(ResBlock, self).__init__()
+        self.in_conv = nn.Conv2d(chan, chan, kernel_size=(3, 3), stride=stride, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.out_conv = nn.Conv2d(chan, chan, kernel_size=(3, 3), stride=stride, padding=1)
+        self.bn = nn.BatchNorm2d(chan)
+
+    def forward(self, x):
+        h = self.in_conv(x)
+        h = self.relu(h)
+        h = self.out_conv(h)
+        h = self.bn(h)
+        h = self.relu(h + x)  # residual connection
+        return h
+
 class MaxPool1D(nn.Module):
     def __init__(self, in_channels: int, pool_size: int):
         super().__init__()

@@ -171,8 +171,6 @@ import torch.nn.functional as F
 from utils import exponential_linspace_int
 
 class ResBlock(nn.Module):
-    expansion = 1
-
     def __init__(self, chan, stride=1):
         super(ResBlock, self).__init__()
         self.in_conv = nn.Conv2d(chan, chan, kernel_size=(3, 3), stride=stride, padding=1)
@@ -242,6 +240,108 @@ class VoxModel(nn.Module):
         }
         torch.save(params, path)
 
+import architectures
+class SpeakerEmbedding(nn.Module):
+    def __init__(self,
+                 in_dim: int,
+                 out_dim: int,
+                 hidden_dim: int,
+                 body_type: str,
+                 pooling_type: str,
+                 
+                 spec_depth: int,
+                 spec_nchan: int,
+                 spec_pool_every: int,
+                 spec_pool_size: int,
+                 
+                 body_depth: int
+                 ):
+        super().__init__()
+        
+        assert body_type in ['linear', 'transformer']
+        assert pooling_type in ['max', 'average', 'attention'] 
+        
+        spec_pools = {'max': architectures.MaxPool2D,
+                      'average': architectures.AvgPool2D,
+                      'attention': architectures.AttentionPool2D}
+        
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.hidden_dim = hidden_dim
+        
+        self.args = {'in_dim': in_dim,
+                    'out_dim': out_dim,
+                    'hidden_dim': hidden_dim,
+                    'body_type': body_type,
+                    'pooling_type': pooling_type,
+                    'spec_depth': spec_depth,
+                    'spec_nchan': spec_nchan,
+                    'spec_pool_every': spec_pool_every,
+                    'spec_pool_size': spec_pool_size,
+                    'body_depth': body_depth}
+        
+        self.pipe = AudioPipeline(input_len_s=QUERY_DURATION, n_mel=128, use_augmentation=True, use_adaptive_rescaling=False)
+        
+        # head to inference over spectrogram via 2D convolutions
+        spec_channels = exponential_linspace_int(start=1, end=spec_nchan, num=spec_depth + 1)
+        self.spec_head = [nn.Unflatten(1, (1, self.pipe.n_mel))]
+        for i in range(spec_depth):
+            in_chan, out_chan = spec_channels[i: i + 2]
+            layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3))]
+            if (i + 1) % spec_pool_every == 0:
+                layer.append(spec_pools[pooling_type](out_chan, spec_pool_size))
+            layer.append(nn.ReLU())
+            self.spec_head.extend(layer)
+        self.spec_head.append(nn.Flatten(1, 3))
+        self.spec_head = nn.Sequential(*self.spec_head)
+        
+        # figure out conv tower output dims and project
+        test_s = self.pipe(torch.zeros(1, self.in_dim))
+        spec_out_dim = self.spec_head(test_s).shape[1]; del test_s  # find output dim of conv tower
+        spec_mid_dim = (spec_out_dim + self.hidden_dim) // 2  # find middle dim for projection
+        self.spec_head.append(nn.Sequential(nn.Linear(spec_out_dim, spec_mid_dim), nn.ReLU(), nn.Linear(spec_mid_dim, self.hidden_dim), nn.ReLU()))
+        
+        # use body to bring down to final output dimension
+        body_dims = exponential_linspace_int(self.hidden_dim, self.out_dim, body_depth + 1)
+        self.body = [nn.BatchNorm1d(self.hidden_dim), nn.Dropout(0.2)]
+        for i in range(body_depth):
+            in_dim, out_dim = body_dims[i: i + 2]
+            layer = [nn.Linear(in_dim, out_dim), nn.ReLU()]
+            self.body.extend(layer)
+        self.body.pop()  # remove last ReLU
+        self.body = nn.Sequential(*self.body)
+        self.fc = nn.Linear(self.out_dim, 1211)
+
+    def forward(self, x):
+        s = self.pipe(x)  # get resampled waveform and spectrograms
+        # from librosa import display; import matplotlib.pyplot as plt; display.specshow(s.cpu().detach().numpy()[0], x_axis='time', y_axis='log'); plt.show(); exit(0)  # view spectrograms
+        # import matplotlib.pyplot as plt; plt.imshow(s.cpu().detach().numpy()[0]); plt.show(); exit(0)
+        s = self.spec_head(s)  # get output from spectrogram head
+        out = self.body(s)  # project to embedding dimension
+        return out
+    
+    @staticmethod
+    def load(model_path: str):
+        """ 
+        Load the model from a file.
+        """
+        params = torch.load(model_path)
+        model = SpeakerEmbedding(**params['args'])
+        model.pipe = params['pipe']
+        model.load_state_dict(params['state_dict'])
+        return model
+
+    def save(self, path: str):
+        """ 
+        Save the model to a file.
+        """
+
+        params = {
+            'args': self.args,   # args to remake the model object
+            'pipe': self.pipe,   # the vocab object
+            'state_dict': self.state_dict()   # the model params
+        }
+        torch.save(params, path)
      
 from trainer import Trainer 
         
@@ -255,10 +355,26 @@ train_args = {'num_epochs': 60,
                 'eval_every': 1,
                 'patience': 3,
                 'num_tries': 4}
-train_dataloader = VCTKDataset('train').get_dataloader(batch_size)
-val_dataloader = VCTKDataset('val').get_dataloader(batch_size)
 
-model = VoxModel()
+model_args = {'in_dim': 16000,
+            'out_dim': 1211,
+            'hidden_dim': 2000,
+            'body_type': 'linear',
+            'pooling_type': 'max',
+            
+            'spec_depth': 5,  # spectrogram head
+            'spec_nchan': 512,
+            'spec_pool_every': 1,
+            'spec_pool_size': 2,
+            
+            'body_depth': 2  # body
+            }
+
+
+train_dataloader = VoxDataset('train').get_dataloader(batch_size)
+val_dataloader = VoxDataset('val').get_dataloader(batch_size)
+
+model = SpeakerEmbedding(**model_args)
 t = Trainer(model_name, model, train_dataloader, val_dataloader, **trainer_args)
 t.train(**train_args)
 
