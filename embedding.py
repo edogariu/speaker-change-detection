@@ -6,11 +6,10 @@ import torch
 import torch.nn as nn
 from scipy.io import wavfile
 from collections import defaultdict
-import tqdm
 
 import architectures
 from pipeline import AudioPipeline
-from utils import QUERY_DURATION, SAMPLE_RATE
+from utils import QUERY_DURATION
 
 SPLIT_INTERVALS = {'train': 0.75,  # intervals for each split (note that split occurs by speakers here, since that is what we hope to generalize over)
                    'val': 0.2,
@@ -247,7 +246,7 @@ class Embedding(nn.Module):
         for i in range(n_layers):
             in_chan, out_chan = channels[i: i + 2]
             self.conv_tower.extend([nn.Conv2d(in_chan, out_chan, kernel_size=(5, 5), stride=2), nn.ReLU(), nn.BatchNorm2d(out_chan), architectures.ResBlock(out_chan)])
-        self.conv_tower = nn.Sequential(*self.conv_tower, nn.AdaptiveAvgPool2d((1, None)), nn.Flatten(1))
+        self.conv_tower = nn.Sequential(*self.conv_tower, nn.AdaptiveAvgPool2d((1, None)), nn.Flatten(1), nn.Dropout(0.1))
         
         test_t = torch.zeros(1, n_mel, n_mel)
         conv_tower_out_dim = self.conv_tower(test_t).shape[1]
@@ -315,7 +314,7 @@ if __name__ == '__main__':
     dataset_name = 'VCTK'; assert dataset_name in ['VCTK', 'Vox']
     mode = 'embedding'; assert mode in ['classifier', 'embedding']
         
-    model_name = 'shit'
+    model_name = 'vctk'
     batch_size = 512
     trainer_args = {'initial_lr': 0.02,
                     'lr_decay_period': 1,

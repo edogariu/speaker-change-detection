@@ -51,8 +51,8 @@ class AudioPipeline(nn.Module):
                 mel = self.resize(mel) 
                 
             # normalize
-            # z = mel.reshape(mel.shape[0], -1)
-            # mel -= z.mean(dim=1).reshape(-1, 1, 1)
-            # mel /= z.std(dim=1).reshape(-1, 1, 1)
+            z = mel.reshape(mel.shape[0], -1)
+            mel -= z.mean(dim=1).reshape(-1, 1, 1)
+            mel /= z.std(dim=1).reshape(-1, 1, 1)
             return mel  
         

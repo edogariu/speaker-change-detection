@@ -10,8 +10,8 @@ from pytorch_metric_learning import losses
 
 # CRITERION = SoftNearestNeighborsLoss() 
 # CRITERION = nn.BCEWithLogitsLoss() 
-# CRITERION = nn.CrossEntropyLoss()
-CRITERION = TripletMarginLoss(0.1)
+CRITERION = nn.CrossEntropyLoss()
+# CRITERION = TripletMarginLoss(0.1)
 # CRITERION = ContrastiveLoss(temperature=0.1)
 # CRITERION = losses.SupConLoss()
 
