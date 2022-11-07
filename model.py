@@ -31,7 +31,7 @@ class AudioPipeline(nn.Module):
         self.spec = TA.Spectrogram(n_fft=n_fft, win_length=int(n_fft / 2.5), power=2, hop_length=int(input_len_s * resample_freq / n_mel))
         self.spec_aug = torch.nn.Sequential(  # tiny tiny augmentation
             TA.TimeStretch(np.random.rand() * 0.1 + 0.95, fixed_rate=True),  # random time stretch in (0.95, 1.05)
-            TA.FrequencyMasking(freq_mask_param=10),  # random masking up to 20 idxs
+            TA.FrequencyMasking(freq_mask_param=10),  # random masking up to `param` idxs
             TA.TimeMasking(time_mask_param=10),
         )
         self.mel_scale = TA.MelScale(n_mels=n_mel, sample_rate=resample_freq, n_stft=n_fft // 2 + 1)
@@ -42,7 +42,7 @@ class AudioPipeline(nn.Module):
         with torch.no_grad():
             resampled = self.resample(waveform)  # resample the input
             spec = self.spec(resampled)  # convert to power spectrogram
-            if self.use_aug and self.training: spec = self.spec_aug(spec)  # apply SpecAugment
+            # if self.use_aug and self.training: spec = self.spec_aug(spec)  # apply SpecAugment
             mel = self.mel_scale(spec)  # convert to mel scale
             mel = self.to_log(mel)  # convert to log-mel scale
 
@@ -51,7 +51,7 @@ class AudioPipeline(nn.Module):
                 mel = torch.cat([self.resize(m[:, :mel.shape[2] - (m.std(dim=0) == 0).sum()].unsqueeze(0)) for m in mel], dim=0)  
             else: 
                 mel = self.resize(mel) 
-            return mel
+            return ((mel + 100) / 130) ** 2  # rescale the values
 
 class SpeakerEmbedding(nn.Module):
     def __init__(self,
@@ -92,7 +92,7 @@ class SpeakerEmbedding(nn.Module):
                     'spec_pool_size': spec_pool_size,
                     'body_depth': body_depth}
         
-        self.pipe = AudioPipeline()
+        self.pipe = AudioPipeline(input_len_s=QUERY_DURATION, n_mel=256, use_augmentation=True, use_adaptive_rescaling=False)
         
         # head to inference over spectrogram via 2D convolutions
         spec_channels = exponential_linspace_int(start=1, end=spec_nchan, num=spec_depth + 1)
@@ -125,7 +125,8 @@ class SpeakerEmbedding(nn.Module):
 
     def forward(self, x):
         s = self.pipe(x)  # get resampled waveform and spectrograms
-        # from librosa import display; import matplotlib.pyplot as plt; display.specshow(s.detach().numpy()[0], x_axis='time', y_axis='log'); plt.show()  # view spectrograms
+        # from librosa import display; import matplotlib.pyplot as plt; display.specshow(s.cpu().detach().numpy()[0], x_axis='time', y_axis='log'); plt.show(); exit(0)  # view spectrograms
+        # import matplotlib.pyplot as plt; plt.imshow(s.cpu().detach().numpy()[0]); plt.show(); exit(0)
         s = self.spec_head(s)  # get output from spectrogram head
         out = self.body(s)  # project to embedding dimension
         return out

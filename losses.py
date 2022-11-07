@@ -37,7 +37,7 @@ class ContrastiveLoss(nn.Module):
 
         # remove diagonal entries (self-contrast)
         mask = torch.eq(labels, labels.T).float().to(emb.device)
-        self_contrast_mask = 1 - torch.eye(batch_size)
+        self_contrast_mask = 1 - torch.eye(batch_size).to(emb.device)
         mask = mask * self_contrast_mask
       
         # loss is negative log-likelihood over positive entries
@@ -101,7 +101,7 @@ class SoftNearestNeighborsLoss(nn.Module):
 
     def forward(self, x, y):
         distances = self.metric(x, x)
-        pick_probs = torch.exp(-(distances / self.temperature)) - torch.eye(x.shape[0])
+        pick_probs = torch.exp(-(distances / self.temperature)) - torch.eye(x.shape[0]).to(x.device)
         pick_probs /= (self.EPS + pick_probs.sum(axis=1).unsqueeze(1))
         masked_pick_probs = pick_probs * (y == y.unsqueeze(1)).squeeze().to(torch.float32)
         return -torch.log(self.EPS + masked_pick_probs.sum(axis=1)).mean()
