@@ -6,8 +6,8 @@ if __name__ == '__main__':
     
     # ------------------------------------- hyperparameters -------------------------------------------------
 
-    model_name = 'emb_big'
-    batch_size = 64
+    model_name = 'vox'
+    batch_size = 128
     trainer_args = {'initial_lr': 0.02,
                     'lr_decay_period': 2,
                     'lr_decay_gamma': 0.7,
@@ -51,15 +51,15 @@ if __name__ == '__main__':
                   'body_type': 'linear',
                   'pooling_type': 'max',
                   
-                  'context_mel_size': 64,
+                  'context_mel_size': 86,
                   'context_depth': 5,
-                  'context_nchan': 512,
+                  'context_nchan': 256,
                   'context_pool_every': 1,
                   'context_pool_size': 2,
                   
-                  'query_mel_size': 64,
+                  'query_mel_size': 86,
                   'query_depth': 5,  
-                  'query_nchan': 512,
+                  'query_nchan': 256,
                   'query_pool_every': 1,
                   'query_pool_size': 2,
                   

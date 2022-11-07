@@ -323,6 +323,7 @@ class SpeakerContextModel(nn.Module):
                     'query_pool_size': query_pool_size,
                     'body_depth': body_depth}
         
+        from pipeline import AudioPipeline
         self.context_pipe = AudioPipeline(input_len_s=CONTEXT_DURATION, n_mel=context_mel_size, use_augmentation=False, use_adaptive_rescaling=True)
         self.query_pipe = AudioPipeline(input_len_s=QUERY_DURATION, n_mel=query_mel_size, use_augmentation=True)
 
@@ -331,7 +332,7 @@ class SpeakerContextModel(nn.Module):
         self.context_head = [nn.Unflatten(1, (1, context_mel_size))]
         for i in range(context_depth):
             in_chan, out_chan = context_channels[i: i + 2]
-            layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3))]
+            layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3), bias=False)]
             if (i + 1) % context_pool_every == 0:
                 layer.append(pools[pooling_type](out_chan, context_pool_size))
             layer.append(nn.ReLU())
@@ -344,7 +345,7 @@ class SpeakerContextModel(nn.Module):
         self.query_head = [nn.Unflatten(1, (1, query_mel_size))]
         for i in range(query_depth):
             in_chan, out_chan = query_channels[i: i + 2]
-            layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3))]
+            layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3), bias=False)]
             if (i + 1) % query_pool_every == 0:
                 layer.append(pools[pooling_type](out_chan, query_pool_size))
             layer.append(nn.ReLU())
@@ -403,9 +404,9 @@ class SpeakerContextModel(nn.Module):
         """ 
         Load the model from a file.
         """
-        params = torch.load(model_path)
+        params = torch.load(model_path, map_location='cpu')
         model = SpeakerContextModel(**params['args'])
-        model.load_state_dict(params['state_dict'])
+        model.load_state_dict(params['state_dict'], strict=False)
         return model
 
     def save(self, path: str):

@@ -3,15 +3,16 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as D
 import tqdm
+from typing import Callable
 
 from utils import count_parameters
 from losses import ContrastiveLoss, SoftNearestNeighborsLoss, TripletMarginLoss
 from pytorch_metric_learning import losses
 
 # CRITERION = SoftNearestNeighborsLoss() 
-# CRITERION = nn.BCEWithLogitsLoss() 
-CRITERION = nn.CrossEntropyLoss()
-# CRITERION = TripletMarginLoss(0.1)
+CRITERION = nn.BCEWithLogitsLoss() 
+# CRITERION = nn.CrossEntropyLoss()
+# CRITERION = TripletMarginLoss(0.3)
 # CRITERION = ContrastiveLoss(temperature=0.1)
 # CRITERION = losses.SupConLoss()
 
@@ -24,7 +25,8 @@ class Trainer():
                  initial_lr: float, 
                  lr_decay_period: int, 
                  lr_decay_gamma: float, 
-                 weight_decay: float):
+                 weight_decay: float,
+                 criterion: Callable = CRITERION):
         """
         Trainer object to train a model. Uses Adam optimizer, StepLR learning rate scheduler, and a patience algorithm.
 
@@ -46,6 +48,8 @@ class Trainer():
             size of each decay step for each model
         weight_decay : float
             l2 regularization for each model
+        criterion : Callable
+            differentiable loss function
         """
         
         self.model_name = model_name
@@ -59,10 +63,10 @@ class Trainer():
         print('Using {} for training'.format(self.device))
 
         # prep model and optimizer and scheduler and loss function
-        self.model.train().to(self.device)
+        self.model.float().train().to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), initial_lr, weight_decay=weight_decay)
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=lr_decay_period, gamma=lr_decay_gamma, verbose=True)
-        self.criterion = CRITERION
+        self.criterion = criterion
 
         # prep statistics
         self.train_losses = {}

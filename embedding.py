@@ -7,6 +7,8 @@ import torch.nn as nn
 from scipy.io import wavfile
 from collections import defaultdict
 
+from trainer import Trainer
+from losses import TripletMarginLoss
 import architectures
 from pipeline import AudioPipeline
 from utils import QUERY_DURATION
@@ -218,6 +220,85 @@ class VCTKTripletDataset(D.Dataset):
     def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
         return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
     
+class VoxTripletDataset(D.Dataset):
+    def __init__(self, split: str):
+        """
+        Creates dataset of pairs of 1 second `.wav` clips from VoxCeleb dataset.
+
+        Parameters
+        ----------
+        split : str
+            which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
+        """
+        super().__init__()
+        
+        assert split in ['train', 'val', 'test', 'all']
+        
+        # get dataframe describing dataset
+        self.df = pd.read_csv('data/vox1/dataset.csv')
+        
+        self.speaker_to_idx = {}
+        for s in np.unique(self.df['speaker']):
+            self.speaker_to_idx[s] = len(self.speaker_to_idx)
+            
+        # split the dataset the same way every time
+        np.random.seed(0)
+        rand_idxs = np.random.permutation(len(self.df))
+        val_idx = int(len(rand_idxs) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(rand_idxs) * SPLIT_INTERVALS['val'])
+        train_idxs, val_idxs, test_idxs = rand_idxs[:val_idx], rand_idxs[val_idx: test_idx], rand_idxs[test_idx:]
+        self.idxs = {'train': train_idxs,
+                     'val': val_idxs,
+                     'test': test_idxs,
+                     'all': rand_idxs}[split]
+        np.random.seed()
+        
+        self.speakers_to_paths = defaultdict(list)
+        for i in self.idxs:
+            datapoint = self.df.iloc[i]
+            self.speakers_to_paths[self.speaker_to_idx[datapoint['speaker']]].append(datapoint['path'])
+
+        self.length = len(self.idxs)
+        
+    def __len__(self):
+        return self.length
+    
+    def __getitem__(self, index: int):
+        idx = self.idxs[index]
+        
+        # get anchor
+        datapoint = self.df.iloc[idx]
+        path = datapoint['path']
+        label = self.speaker_to_idx[datapoint['speaker']]
+        _, anchor = wavfile.read(f'data/vox1/{path}')
+        idx_range = len(anchor) - int(QUERY_DURATION * 16000)
+        rand_index = np.random.randint(idx_range)
+        anchor = anchor[rand_index: int(QUERY_DURATION * 16000) + rand_index]
+        anchor = (anchor / 2 ** 15).astype(float)
+        
+        # get pos pair
+        speaker = self.speakers_to_paths[label]
+        rand_path = speaker[np.random.randint(len(speaker))]
+        _, pos = wavfile.read(f'data/vox1/{rand_path}')
+        idx_range = len(pos) - int(QUERY_DURATION * 16000)
+        rand_index = np.random.randint(idx_range)
+        pos = pos[rand_index: int(QUERY_DURATION * 16000) + rand_index].astype(float)
+        pos = (pos / 2 ** 15).astype(float)
+        
+        # get neg pair
+        speaker_list = list(self.speakers_to_paths.keys())
+        speaker = self.speakers_to_paths[speaker_list[np.random.randint(len(speaker_list))]]
+        rand_path = speaker[np.random.randint(len(speaker))]
+        _, neg = wavfile.read(f'data/vox1/{rand_path}')
+        idx_range = len(neg) - int(QUERY_DURATION * 16000)
+        rand_index = np.random.randint(idx_range)
+        neg = neg[rand_index: int(QUERY_DURATION * 16000) + rand_index].astype(float)
+        neg = (neg / 2 ** 15).astype(float)
+
+        return (anchor, pos, neg), -1
+    
+    def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
+        return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
+
 # -----------------------------------------------------------------------------------------------
 # --------------------------------------- THE MODEL ---------------------------------------------
 # -----------------------------------------------------------------------------------------------
@@ -245,8 +326,8 @@ class Embedding(nn.Module):
         self.conv_tower = [nn.Unflatten(1, (1, n_mel)),]
         for i in range(n_layers):
             in_chan, out_chan = channels[i: i + 2]
-            self.conv_tower.extend([nn.Conv2d(in_chan, out_chan, kernel_size=(5, 5), stride=2), nn.ReLU(), nn.BatchNorm2d(out_chan), architectures.ResBlock(out_chan)])
-        self.conv_tower = nn.Sequential(*self.conv_tower, nn.AdaptiveAvgPool2d((1, None)), nn.Flatten(1), nn.Dropout(0.1))
+            self.conv_tower.extend([nn.Conv2d(in_chan, out_chan, kernel_size=(5, 5), stride=2, bias=False), nn.ReLU(), nn.BatchNorm2d(out_chan), architectures.ResBlock(out_chan)])
+        self.conv_tower = nn.Sequential(*self.conv_tower, nn.AdaptiveAvgPool2d((1, None)), nn.Flatten(1))
         
         test_t = torch.zeros(1, n_mel, n_mel)
         conv_tower_out_dim = self.conv_tower(test_t).shape[1]
@@ -283,14 +364,14 @@ class Embedding(nn.Module):
     
     def forward(self, *x):
         if self.emb_mode: return self._triplet_forward(*x)
-        else: return self._classify_forward(x)
+        else: return self._classify_forward(*x)
     
     @staticmethod
     def load(model_path: str):
         """ 
         Load the model from a file.
         """
-        params = torch.load(model_path)
+        params = torch.load(model_path, map_location='cpu')
         model = Embedding(**params['args'])
         model.pipe = params['pipe']
         model.load_state_dict(params['state_dict'])
@@ -309,16 +390,15 @@ class Embedding(nn.Module):
         torch.save(params, path)
         
 if __name__ == '__main__':
-    from trainer import Trainer 
     
-    dataset_name = 'VCTK'; assert dataset_name in ['VCTK', 'Vox']
+    dataset_name = 'Vox'; assert dataset_name in ['VCTK', 'Vox']
     mode = 'embedding'; assert mode in ['classifier', 'embedding']
         
-    model_name = 'vctk'
-    batch_size = 512
-    trainer_args = {'initial_lr': 0.02,
+    model_name = 'vox'
+    batch_size = 128
+    trainer_args = {'initial_lr': 0.01,
                     'lr_decay_period': 1,
-                    'lr_decay_gamma': 0.5,
+                    'lr_decay_gamma': 0.6,
                     'weight_decay': 0.0002}
     train_args = {'num_epochs': 60,
                     'eval_every': 1,
@@ -327,20 +407,20 @@ if __name__ == '__main__':
 
     model_args = {'n_layers': 3,
                   'n_mel': 86,
-                  'emb_dim': 256,
+                  'emb_dim': 1256,
                   'n_classes': 111 if dataset_name == 'VCTK' else 1211,
                   'n_chan': 256}
 
     if mode == 'classifier': dataset = VCTKClassifierDataset if dataset_name == 'VCTK' else VoxClassifierDataset
-    else: dataset = VCTKTripletDataset if dataset_name == 'VCTK' else None
-    train_dataloader = dataset('train').get_dataloader(batch_size)
-    val_dataloader = dataset('val').get_dataloader(batch_size)
+    else: dataset = VCTKTripletDataset if dataset_name == 'VCTK' else VoxTripletDataset
+    train_dataloader = dataset('train').get_dataloader(batch_size, num_workers=8)
+    val_dataloader = dataset('val').get_dataloader(batch_size, num_workers=4)
 
     model = Embedding(**model_args)
-    model.load_state_dict(torch.load('checkpoints/models/shit.pth', map_location='cpu')['state_dict'])
     
     if mode == 'embedding': model.toggle_emb_mode()
     
-    t = Trainer(model_name, model, train_dataloader, val_dataloader, **trainer_args)
+    criterion = TripletMarginLoss(0.3) if mode == 'embedding' else nn.CrossEntropyLoss()
+    t = Trainer(model_name, model, train_dataloader, val_dataloader, criterion=criterion, **trainer_args)
     t.train(**train_args)
     

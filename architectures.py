@@ -6,9 +6,9 @@ from einops.layers.torch import Rearrange
 class ResBlock(nn.Module):
     def __init__(self, chan, stride=1):
         super(ResBlock, self).__init__()
-        self.in_conv = nn.Conv2d(chan, chan, kernel_size=(3, 3), stride=stride, padding=1)
+        self.in_conv = nn.Conv2d(chan, chan, kernel_size=(3, 3), stride=stride, padding=1, bias=False)
         self.relu = nn.ReLU(inplace=True)
-        self.out_conv = nn.Conv2d(chan, chan, kernel_size=(3, 3), stride=stride, padding=1)
+        self.out_conv = nn.Conv2d(chan, chan, kernel_size=(3, 3), stride=stride, padding=1, bias=False)
         self.bn = nn.BatchNorm2d(chan)
 
     def forward(self, x):
