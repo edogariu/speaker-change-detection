@@ -9,6 +9,57 @@ SPLIT_INTERVALS = {'train': 0.8,  # intervals for each split (note that split oc
                    'val': 0.2,
                    'test': 0.00}
 
+import os
+class VCTKDataset(D.Dataset):
+    def __init__(self, split: str):
+        super().__init__()
+        
+        assert split in ['train', 'val', 'test', 'all']
+        
+        # make dataframe describing dataset
+        self.df = pd.DataFrame()
+        paths = [p for p in np.sort(os.listdir('data/VCTK')) if '.wav' in p]
+        self.df['paths'] = paths
+        self.df['id_strs'] = [p.split('_')[0] for p in paths]
+        id_to_int = {}
+        for id in self.df['id_strs']:
+            id_to_int[id] = len(id_to_int)
+        self.df['ids'] = [id_to_int[id] for id in self.df['id_strs']]
+            
+        # split the dataset the same way every time
+        np.random.seed(0)
+        rand_idxs = np.random.permutation(len(self.df))
+        val_idx = int(len(rand_idxs) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(rand_idxs) * SPLIT_INTERVALS['val'])
+        train_idxs, val_idxs, test_idxs = rand_idxs[:val_idx], rand_idxs[val_idx: test_idx], rand_idxs[test_idx:]
+        self.idxs = {'train': train_idxs,
+                     'val': val_idxs,
+                     'test': test_idxs,
+                     'all': rand_idxs}[split]
+        np.random.seed()
+
+        self.length = len(self.idxs)
+        
+    def __len__(self):
+        return self.length
+    
+    def __getitem__(self, index: int):
+        idx = self.idxs[index]
+        
+        datapoint = self.df.iloc[idx]
+        path = datapoint['paths']
+        label = datapoint['ids']
+        _, inp = wavfile.read(f'data/VCTK/{path}')
+        
+        idx_range = len(inp) - int(QUERY_DURATION * SAMPLE_RATE)
+        rand_index = np.random.randint(idx_range)
+        inp = inp[rand_index: int(QUERY_DURATION * SAMPLE_RATE) + rand_index].astype(float)
+        
+        return (inp,), label
+    
+    def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
+        return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
+
+
 class VoxDataset(D.Dataset):
     def __init__(self, split: str):
         """
@@ -143,8 +194,9 @@ class VoxModel(nn.Module):
         
         n_layers = 2
         n_mel = 64
-        n_classes = 1211
+        n_classes = 111
         n_chan = 128
+        self.args = {}
         
         self.pipe = AudioPipeline(n_mel=n_mel, n_fft=1024)
         
@@ -152,7 +204,7 @@ class VoxModel(nn.Module):
         self.conv_tower = [nn.Unflatten(1, (1, n_mel)),]
         for i in range(n_layers):
             in_chan, out_chan = channels[i: i + 2]
-            self.conv_tower.extend([nn.Conv2d(in_chan, out_chan, kernel_size=(5, 5), stride=2), nn.ReLU(), nn.BatchNorm2d(out_chan), ResBlock(out_chan), nn.MaxPool2d(2, 2)])
+            self.conv_tower.extend([nn.Conv2d(in_chan, out_chan, kernel_size=(5, 5), stride=2), nn.ReLU(), nn.BatchNorm2d(out_chan), ResBlock(out_chan)])
         self.conv_tower = nn.Sequential(*self.conv_tower, nn.AdaptiveAvgPool2d((1, None)), nn.Flatten(1))
         
         test_t = torch.zeros(1, n_mel, n_mel)
@@ -166,21 +218,45 @@ class VoxModel(nn.Module):
         x = self.conv_tower(x)
         x = self.fc(x)
         return x
+    
+    @staticmethod
+    def load(model_path: str):
+        """ 
+        Load the model from a file.
+        """
+        params = torch.load(model_path)
+        model = VoxModel(**params['args'])
+        model.pipe = params['pipe']
+        model.load_state_dict(params['state_dict'])
+        return model
+
+    def save(self, path: str):
+        """ 
+        Save the model to a file.
+        """
+
+        params = {
+            'args': self.args,   # args to remake the model object
+            'pipe': self.pipe,   # the vocab object
+            'state_dict': self.state_dict()   # the model params
+        }
+        torch.save(params, path)
+
      
-from trainer import Trainer   
+from trainer import Trainer 
         
 model_name = 'shit'
 batch_size = 512
-trainer_args = {'initial_lr': 0.02,
-                'lr_decay_period': 2,
-                'lr_decay_gamma': 0.7,
+trainer_args = {'initial_lr': 0.04,
+                'lr_decay_period': 1,
+                'lr_decay_gamma': 0.5,
                 'weight_decay': 0.0002}
 train_args = {'num_epochs': 60,
                 'eval_every': 1,
                 'patience': 3,
                 'num_tries': 4}
-train_dataloader = VoxDataset('train').get_dataloader(batch_size)
-val_dataloader = VoxDataset('val').get_dataloader(batch_size)
+train_dataloader = VCTKDataset('train').get_dataloader(batch_size)
+val_dataloader = VCTKDataset('val').get_dataloader(batch_size)
 
 model = VoxModel()
 t = Trainer(model_name, model, train_dataloader, val_dataloader, **trainer_args)
