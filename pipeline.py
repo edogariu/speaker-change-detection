@@ -40,7 +40,7 @@ class AudioPipeline(nn.Module):
         with torch.no_grad():
             resampled = self.resample(waveform.float())  # resample the input
             spec = self.spec(resampled)  # convert to power spectrogram
-            # if self.use_aug and self.training: spec = self.spec_aug(spec)  # apply SpecAugment
+            if self.use_aug and self.training: spec = self.spec_aug(spec)  # apply SpecAugment
             mel = self.mel_scale(spec)  # convert to mel scale
             mel = self.to_log(mel)  # convert to log-mel scale
 
