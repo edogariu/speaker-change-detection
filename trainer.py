@@ -10,8 +10,9 @@ from pytorch_metric_learning import losses
 
 # CRITERION = SoftNearestNeighborsLoss() 
 # CRITERION = nn.BCEWithLogitsLoss() 
+CRITERION = nn.CrossEntropyLoss()
 # CRITERION = ContrastiveLoss(temperature=0.1)
-CRITERION = losses.SupConLoss()
+# CRITERION = losses.SupConLoss()
 
 class Trainer():
     def __init__(self, 

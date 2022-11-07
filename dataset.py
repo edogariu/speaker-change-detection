@@ -8,7 +8,7 @@ from scipy.io import wavfile
 from collections import defaultdict
 import pickle; import dill
 
-from utils import CONTEXT_DURATION, SAMPLE_RATE
+from utils import CONTEXT_DURATION, QUERY_DURATION, SAMPLE_RATE
 
 SPLIT_INTERVALS = {'train': 0.8,  # intervals for each split (note that split occurs by speakers here, since that is what we hope to generalize over)
                    'val': 0.2,
@@ -286,3 +286,119 @@ class ContextDataset(D.Dataset):
     def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
         return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
     
+    
+class VoxDataset(D.Dataset):
+    def __init__(self, split: str, prob: float, method: str):
+        """
+        Creates dataset of `.wav` clips from VoxCeleb1 dataset.
+
+        Parameters
+        ----------
+        split : str
+            which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
+        prob : float
+            probability that paired datapoint comes from the same speaker
+        method : str
+            how to pass data. must be one of `['pairs', 'context']`
+        """
+        super().__init__()
+        
+        assert split in ['train', 'val', 'test', 'all']
+        assert method in ['pairs', 'context']
+        
+        self.prob = prob
+        self.method = method
+                
+        # get dataframe describing dataset
+        df = pd.read_csv('data/vox1/dataset.csv')
+                
+        # split the dataset the same way every time
+        np.random.seed(0)
+        speaker_ids = np.unique(df['speaker'])
+        rand_idxs = np.random.permutation(len(speaker_ids))
+        val_idx = int(len(speaker_ids) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(speaker_ids) * SPLIT_INTERVALS['val'])
+        train_idxs, val_idxs, test_idxs = rand_idxs[:val_idx], rand_idxs[val_idx: test_idx], rand_idxs[test_idx:]
+        speakers_by_split = {'train': speaker_ids[train_idxs],
+                             'val': speaker_ids[val_idxs],
+                             'test': speaker_ids[test_idxs],
+                             'all': speaker_ids}
+        np.random.seed()
+
+        self.paths = []
+        self.labels = []
+        self.speaker_to_paths = defaultdict(list)  # to find clips from a speaker quickly
+        print(f'Constructing {split} dataset!')
+        for d in df.values:
+            _, id, path, _ = d
+            if id in speakers_by_split[split]: 
+                self.paths.append(path)
+                self.labels.append(id)
+                self.speaker_to_paths[id].append(path)
+
+        self.length = len(self.paths)
+        
+    def __len__(self):
+        return self.length
+    
+    def __getitem__(self, index: int):
+        label = self.labels[index]
+        path = self.paths[index]        
+        _, query = wavfile.read(f'data/vox1/{path}')
+        # rand_index = np.random.randint(len(query) - int(QUERY_DURATION * SAMPLE_RATE))  # pick random starting point
+        # query = query[rand_index: int(QUERY_DURATION * SAMPLE_RATE) + rand_index]
+
+        if np.random.rand() < self.prob:  # if we want to yield a pair from the same speaker
+            duration = CONTEXT_DURATION if self.method == 'context' else QUERY_DURATION
+        
+            idx_range = len(query) - int(duration * SAMPLE_RATE) - int(QUERY_DURATION * SAMPLE_RATE)
+            rand_index = np.random.randint(idx_range)
+            other = query[rand_index: int(duration * SAMPLE_RATE) + rand_index]
+            query = query[int(duration * SAMPLE_RATE) + rand_index: int(QUERY_DURATION * SAMPLE_RATE) + int(duration * SAMPLE_RATE) + rand_index]
+            
+            # speaker = self.speaker_to_paths[label]
+            # rand_path = speaker[np.random.randint(len(speaker))]  # choose a random clip of our desired speaker
+            comp = 1.
+        else:
+            rand_speaker = list(self.speaker_to_paths.keys())[np.random.randint(len(self.speaker_to_paths))]  # pick a random speaker
+            speaker = self.speaker_to_paths[rand_speaker]
+            rand_path = speaker[np.random.randint(len(speaker))]  # choose a random clip of that speaker
+            _, other = wavfile.read(f'data/vox1/{rand_path}')
+            duration = CONTEXT_DURATION if self.method == 'context' else QUERY_DURATION
+            
+            idx_range = len(other) - int(duration * SAMPLE_RATE)
+            if idx_range < 0:
+                other = np.pad(other, (0, -idx_range))
+            else:
+                rand_index = np.random.randint(idx_range)
+            other = other[rand_index: int(duration * SAMPLE_RATE) + rand_index]
+            rand_index = np.random.randint(len(query) - int(QUERY_DURATION * SAMPLE_RATE))  # pick random starting point
+            query = query[rand_index: int(QUERY_DURATION * SAMPLE_RATE) + rand_index]
+            comp = float(label == rand_speaker)
+
+        # _, other = wavfile.read(f'data/vox1/{rand_path}')
+        
+        # duration = CONTEXT_DURATION if self.method == 'context' else QUERY_DURATION
+        
+        # idx_range = len(other) - int(duration * SAMPLE_RATE)
+        # if idx_range < 0:
+        #     other = np.pad(other, (0, -idx_range))
+        # else:
+        #     rand_index = np.random.randint(idx_range)
+        #     other = other[rand_index: int(duration * SAMPLE_RATE) + rand_index]
+
+        # rescale
+        other = (other / 2 ** 15).astype(float)
+        query = (query / 2 ** 15).astype(float)
+        return (other, query), comp
+    
+    def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
+        return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
+    
+# d = VoxDataset('train', 0.3, 'context').get_dataloader(1)
+# import matplotlib.pyplot as plt
+# for x, y in d:
+#     print(x[0].shape, x[1].shape, y)
+#     print(x[0].mean())
+#     plt.plot(x[1][0])
+#     plt.show()
+    # break

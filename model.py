@@ -11,13 +11,13 @@ import architectures
 class AudioPipeline(nn.Module):
     def __init__(
         self,
-        input_len_s: float=1.,
+        input_len_s: float=QUERY_DURATION,
         n_mel: int=256,
         use_augmentation: bool=False,
         use_adaptive_rescaling: bool=False,  # whether to detect blank columns and rescale them away
         input_freq=SAMPLE_RATE,
         resample_freq=SAMPLE_RATE,
-        n_fft=2048,
+        n_fft=512,
     ):
         super().__init__()
         
@@ -40,7 +40,7 @@ class AudioPipeline(nn.Module):
 
     def forward(self, waveform: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            resampled = self.resample(waveform)  # resample the input
+            resampled = self.resample(waveform.float())  # resample the input
             spec = self.spec(resampled)  # convert to power spectrogram
             # if self.use_aug and self.training: spec = self.spec_aug(spec)  # apply SpecAugment
             mel = self.mel_scale(spec)  # convert to mel scale
@@ -51,7 +51,7 @@ class AudioPipeline(nn.Module):
                 mel = torch.cat([self.resize(m[:, :mel.shape[2] - (m.std(dim=0) == 0).sum()].unsqueeze(0)) for m in mel], dim=0)  
             else: 
                 mel = self.resize(mel) 
-            return ((mel + 100) / 130) ** 2  # rescale the values
+            return ((mel + 100) / 130)  # rescale the values
 
 class SpeakerEmbedding(nn.Module):
     def __init__(self,
