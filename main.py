@@ -9,7 +9,7 @@ if __name__ == '__main__':
     model_name = 'test'
     batch_size = 256
     trainer_args = {'initial_lr': 0.02,
-                    'lr_decay_period': 1,
+                    'lr_decay_period': 2,
                     'lr_decay_gamma': 0.7,
                     'weight_decay': 0.0002}
     train_args = {'num_epochs': 60,
@@ -47,23 +47,23 @@ if __name__ == '__main__':
     #               }
 
     # context
-    model_args = {'hidden_dim': 200,
+    model_args = {'hidden_dim': 128,
                   'body_type': 'linear',
-                  'pooling_type': 'attention',
+                  'pooling_type': 'max',
                   
                   'context_mel_size': 128,
-                  'context_depth': 6,
-                  'context_nchan': 256,
+                  'context_depth': 5,
+                  'context_nchan': 128,
                   'context_pool_every': 1,
                   'context_pool_size': 2,
                   
                   'query_mel_size': 128,
-                  'query_depth': 5,  # spectrogram head
-                  'query_nchan': 72,
+                  'query_depth': 5,  
+                  'query_nchan': 64,
                   'query_pool_every': 1,
                   'query_pool_size': 2,
                   
-                  'body_depth': 4 # body
+                  'body_depth': 4 
                   }
 
     # --------------------------------------------------------------------------------------------------------

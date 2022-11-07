@@ -42,7 +42,7 @@ class AudioPipeline(nn.Module):
         with torch.no_grad():
             resampled = self.resample(waveform)  # resample the input
             spec = self.spec(resampled)  # convert to power spectrogram
-            # if self.use_aug: spec = self.spec_aug(spec)  # apply SpecAugment
+            if self.use_aug and self.training: spec = self.spec_aug(spec)  # apply SpecAugment
             mel = self.mel_scale(spec)  # convert to mel scale
             mel = self.to_log(mel)  # convert to log-mel scale
 
@@ -355,10 +355,17 @@ class SpeakerContextModel(nn.Module):
         test_c, test_q = torch.zeros(3, context_mel_size, context_mel_size), torch.zeros(3, query_mel_size, query_mel_size)
         context_out_dim = self.context_head(test_c).shape[1]  # find output dim of context conv tower
         context_mid_dim = (context_out_dim + self.hidden_dim) // 2  # find middle dim for projection
-        self.context_head.append(nn.Sequential(nn.Linear(context_out_dim, context_mid_dim), nn.ReLU(), nn.Linear(context_mid_dim, self.hidden_dim), nn.ReLU()))
+        self.context_head.append(nn.Sequential(nn.Linear(context_out_dim, context_mid_dim), nn.ReLU(), 
+                                            #    nn.Linear(context_mid_dim, context_mid_dim), nn.ReLU(), 
+                                            #    nn.Linear(context_mid_dim, context_mid_dim), nn.ReLU(), 
+                                               nn.Linear(context_mid_dim, context_mid_dim), nn.ReLU(), 
+                                               nn.Linear(context_mid_dim, self.hidden_dim), nn.ReLU()))
         query_out_dim = self.query_head(test_q).shape[1]  # find output dim of query conv tower
         query_mid_dim = (query_out_dim + self.hidden_dim) // 2  # find middle dim for projection
-        self.query_head.append(nn.Sequential(nn.Linear(query_out_dim, query_mid_dim), nn.ReLU(), nn.Linear(query_mid_dim, self.hidden_dim), nn.ReLU()))
+        self.query_head.append(nn.Sequential(nn.Linear(query_out_dim, query_mid_dim), nn.ReLU(), 
+                                            #  nn.Linear(query_mid_dim, query_mid_dim), nn.ReLU(), 
+                                             nn.Linear(query_mid_dim, query_mid_dim), nn.ReLU(), 
+                                             nn.Linear(query_mid_dim, self.hidden_dim), nn.ReLU()))
         del test_c, test_q
         
         # use body to bring down to final output dimension
