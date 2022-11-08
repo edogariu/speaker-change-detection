@@ -82,7 +82,7 @@ class Trainer():
         
         avg_loss = 0.
         i = 0
-        pbar = tqdm.tqdm(self.train_dataloader)
+        pbar = tqdm.tqdm(self.train_dataloader, total=len(self.train_dataloader))
         for x, y in pbar:
             x = [_x.to(self.device) for _x in x]
             y = y.to(self.device)
@@ -111,7 +111,7 @@ class Trainer():
         avg_loss = 0.
         i = 0
         with torch.no_grad():
-            pbar = tqdm.tqdm(self.val_dataloader)
+            pbar = tqdm.tqdm(self.val_dataloader, total=len(self.val_dataloader))
             for x, y in pbar:
                 x = [_x.to(self.device) for _x in x]
                 y = y.to(self.device)

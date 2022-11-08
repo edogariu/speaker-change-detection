@@ -17,7 +17,7 @@ from pipeline import AudioPipeline
 SPLIT_INTERVALS = {'train': 0.75,  # intervals for each split (note that split occurs by speakers here, since that is what we hope to generalize over)
                    'val': 0.2,
                    'test': 0.05}
-QUERY_DURATION = 0.8
+QUERY_DURATION = 0.5
 
 # -----------------------------------------------------------------------------------------------
 # ------------------------- DATASETS FOR INITIAL SPEAKER CLASSIFIER TRAINING --------------------
@@ -336,6 +336,7 @@ class VoxContrastiveDataloader():
         np.random.seed()
         
         self.i = 0
+        self.num_batches_yielded = 0
         self.batch_size = batch_size
         
         self.length = len(self.idxs)
@@ -345,13 +346,16 @@ class VoxContrastiveDataloader():
     
     def __iter__(self):
         self.i = 0
+        self.num_batches_yielded = 0
         np.random.shuffle(self.idxs)
         return self
     
     def __next__(self):
-        if self.i > self.length: raise StopIteration
-        
         idxs = self.idxs[self.i: self.i + self.batch_size]
+
+        if self.num_batches_yielded >= len(self) or len(idxs) < self.batch_size: 
+            raise StopIteration
+
         count = 0
         
         datapoints = self.df.iloc[idxs]
@@ -364,13 +368,15 @@ class VoxContrastiveDataloader():
             assert sr == 16000
             anchor = np.split(anchor, np.arange(0, len(anchor), int(QUERY_DURATION * sr)))[1:-1]
             assert len(anchor) == np.floor(length / QUERY_DURATION)
-            for a in anchor:
+            for a in anchor[:self.batch_size // 3]:  # make sure one clip never takes up more than a third of the batch
+                if np.std(a) < 200: continue  # filter out silence
                 batch_x.append((a / 2 ** 15).astype(float))
                 batch_y.append(label)
             count += 1
             if len(batch_y) > self.batch_size: break
         
         self.i += count
+        self.num_batches_yielded += 1
         batch_x = np.stack(batch_x, axis=0)
         batch_y = np.stack(batch_y, axis=0)
 
@@ -442,7 +448,6 @@ class Embedding(nn.Module):
         return x
     
     def forward(self, *x):
-        for a in x: print(a.shape)
         if self.emb_mode: return self.emb(*x)# self._triplet_forward(*x)
         else: return self._classify_forward(*x)
     
@@ -471,12 +476,12 @@ class Embedding(nn.Module):
         
 if __name__ == '__main__':
     
-    dataset_name = 'VCTK'; assert dataset_name in ['VCTK', 'Vox']
-    mode = 'classifier'; assert mode in ['classifier', 'embedding']
+    dataset_name = 'Vox'; assert dataset_name in ['VCTK', 'Vox']
+    mode = 'embedding'; assert mode in ['classifier', 'embedding']
         
-    model_name = 'vox_emb'
+    model_name = f'{dataset_name.lower()}_emb'
     batch_size = 512
-    trainer_args = {'initial_lr': 0.01,
+    trainer_args = {'initial_lr': 0.016,
                     'lr_decay_period': 3,
                     'lr_decay_gamma': 0.7,
                     'weight_decay': 0.0002}
@@ -487,7 +492,7 @@ if __name__ == '__main__':
 
     model_args = {'n_layers': 3,
                   'n_mel': 86,
-                  'emb_dim': 256 if dataset_name == 'VCTK' else 1256,
+                  'emb_dim': 256 if dataset_name == 'VCTK' else 256,
                   'n_classes': 111 if dataset_name == 'VCTK' else 1211,
                   'n_chan': 256,
                   'in_freq': 8000 if dataset_name == 'VCTK' else 16000}
