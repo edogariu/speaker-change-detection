@@ -1,21 +1,11 @@
+from typing import Callable
+import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as D
-import tqdm
-from typing import Callable
 
 from utils import count_parameters
-from losses import ContrastiveLoss, SoftNearestNeighborsLoss, TripletMarginLoss
-from pytorch_metric_learning import losses
-
-# CRITERION = SoftNearestNeighborsLoss() 
-CRITERION = nn.BCEWithLogitsLoss() 
-# CRITERION = nn.CrossEntropyLoss()
-# CRITERION = TripletMarginLoss(0.3)
-# CRITERION = ContrastiveLoss(temperature=0.1)
-# CRITERION = losses.SupConLoss()
-
 class Trainer():
     def __init__(self, 
                  model_name: str,
@@ -26,7 +16,7 @@ class Trainer():
                  lr_decay_period: int, 
                  lr_decay_gamma: float, 
                  weight_decay: float,
-                 criterion: Callable = CRITERION):
+                 criterion: Callable):
         """
         Trainer object to train a model. Uses Adam optimizer, StepLR learning rate scheduler, and a patience algorithm.
 

@@ -12,11 +12,8 @@ import pytorch_metric_learning.losses as pml
 from losses import TripletMarginLoss
 import architectures
 from pipeline import AudioPipeline
-# from utils import QUERY_DURATION
+from utils import SPLIT_INTERVALS
 
-SPLIT_INTERVALS = {'train': 0.75,  # intervals for each split (note that split occurs by speakers here, since that is what we hope to generalize over)
-                   'val': 0.2,
-                   'test': 0.05}
 QUERY_DURATION = 0.5
 
 # -----------------------------------------------------------------------------------------------
@@ -169,7 +166,6 @@ class VCTKTripletDataset(D.Dataset):
         self.df['id'] = [id_to_int[id] for id in self.df['id_str']]
         
         # split the dataset the same way every time
-        # split the dataset the same way every time
         np.random.seed(0)
         rand_idxs = np.random.permutation(len(self.df))
         val_idx = int(len(rand_idxs) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(rand_idxs) * SPLIT_INTERVALS['val'])
@@ -201,8 +197,6 @@ class VCTKTripletDataset(D.Dataset):
         rand_index = np.random.randint(idx_range)
         anchor = anchor[rand_index: int(QUERY_DURATION * 8000) + rand_index].astype(float)
 
-        return (anchor,), label
-        
         # get pos pair
         speaker = self.speakers_to_paths[label]
         rand_path = speaker[np.random.randint(len(speaker))]
@@ -279,8 +273,6 @@ class VoxTripletDataset(D.Dataset):
         anchor = anchor[rand_index: int(QUERY_DURATION * 16000) + rand_index]
         anchor = (anchor / 2 ** 15).astype(float)
 
-        return (anchor,), label
-        
         # get pos pair
         speaker = self.speakers_to_paths[label]
         rand_path = speaker[np.random.randint(len(speaker))]
@@ -508,8 +500,7 @@ if __name__ == '__main__':
     
     if mode == 'embedding': model.toggle_emb_mode()
     
-    # criterion = TripletMarginLoss(0.3) if mode == 'embedding' else nn.CrossEntropyLoss()
-    criterion = pml.SupConLoss()
+    criterion = pml.SupConLoss() if mode == 'embedding' else nn.CrossEntropyLoss()
     t = Trainer(model_name, model, train_dataloader, val_dataloader, criterion=criterion, **trainer_args)
     t.train(**train_args)
     

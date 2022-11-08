@@ -1,22 +1,19 @@
+from collections import defaultdict
+import os
+from scipy.io import wavfile
 import pandas as pd
 import numpy as np
-import torch.utils.data as D
 import torch
 import torch.nn as nn
-import os
+import torch.utils.data as D
 import torchaudio.transforms as T
-from scipy.io import wavfile
-from collections import defaultdict
 
-from trainer import Trainer
 import architectures
-from utils import exponential_linspace_int
+from utils import exponential_linspace_int, SPLIT_INTERVALS
+from trainer import Trainer
 
 QUERY_DURATION = 0.5
-
-SPLIT_INTERVALS = {'train': 0.75,
-                   'val': 0.2,
-                   'test': 0.05}
+SAMPLE_RATE = 8000
 
 class EnergyDataset(D.Dataset):
     def __init__(self, split: str, prob: float):
@@ -103,18 +100,18 @@ class EnergyDataset(D.Dataset):
             query = query / 2 ** 15
             query = self.resample(query)
             if np.random.rand() < self.prob:  # if we want to yield a pair from the same speaker
-                rand_index = np.random.randint(query.shape[0] - 2 * int(QUERY_DURATION * 8000))  # pick random starting point
-                other = query[int(QUERY_DURATION * 8000) + rand_index: 2 * int(QUERY_DURATION * 8000) + rand_index]
-                query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index]
+                rand_index = np.random.randint(query.shape[0] - 2 * int(QUERY_DURATION * SAMPLE_RATE))  # pick random starting point
+                other = query[int(QUERY_DURATION * SAMPLE_RATE) + rand_index: 2 * int(QUERY_DURATION * SAMPLE_RATE) + rand_index]
+                query = query[rand_index: int(QUERY_DURATION * SAMPLE_RATE) + rand_index]
                 other_label = label
                 datapoint = None
             else: 
-                rand_index = np.random.randint(query.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
-                query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index]
+                rand_index = np.random.randint(query.shape[0] - int(QUERY_DURATION * SAMPLE_RATE))  # pick random starting point
+                query = query[rand_index: int(QUERY_DURATION * SAMPLE_RATE) + rand_index]
                 datapoint = self.df.iloc[self.idxs[np.random.randint(self.length)]]
         else:
-            rand_index = np.random.randint(query.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
-            query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index]
+            rand_index = np.random.randint(query.shape[0] - int(QUERY_DURATION * SAMPLE_RATE))  # pick random starting point
+            query = query[rand_index: int(QUERY_DURATION * SAMPLE_RATE) + rand_index]
 
             if np.random.rand() < self.prob:  # if we want to yield a pair from the same speaker
                 speaker = self.speakers_to_rows[label]
@@ -133,8 +130,8 @@ class EnergyDataset(D.Dataset):
             if other_sr == 16000:  # if this is a vox datapoint
                 other = other / 2 ** 15
                 other = self.resample(other)
-            rand_index = np.random.randint(other.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
-            other = other[rand_index: int(QUERY_DURATION * 8000) + rand_index]
+            rand_index = np.random.randint(other.shape[0] - int(QUERY_DURATION * SAMPLE_RATE))  # pick random starting point
+            other = other[rand_index: int(QUERY_DURATION * SAMPLE_RATE) + rand_index]
 
         return (other, query), float(label == other_label)
     
@@ -177,27 +174,27 @@ class EnergyModel(nn.Module):
                     'body_depth': body_depth}
         
         from pipeline import AudioPipeline
-        self.pipe = AudioPipeline(input_len_s=QUERY_DURATION, n_mel=mel_size, use_augmentation=True, input_freq=8000, resample_freq=8000, n_fft=1024)
+        self.pipe = AudioPipeline(n_mel=mel_size, use_augmentation=True, input_freq=SAMPLE_RATE, resample_freq=SAMPLE_RATE, n_fft=1024)
 
-        # # head to inference over query spec via 2D convolutions
-        # channels = exponential_linspace_int(start=1, end=nchan, num=depth + 1)
-        # self.head = [nn.Unflatten(1, (1, mel_size))]
-        # for i in range(depth):
-        #     in_chan, out_chan = channels[i: i + 2]
-        #     layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3), bias=False)]
-        #     if (i + 1) % pool_every == 0:
-        #         layer.append(pools[pooling_type](out_chan, pool_size))
-        #     layer.append(nn.ReLU())
-        #     self.head.extend(layer)
-        # self.head.append(nn.Flatten(1, 3))
-        # self.head = nn.Sequential(*self.head)
-
-        channels = np.rint(np.linspace(1, nchan, depth + 1)).astype(int)
-        self.head = [nn.Unflatten(1, (1, mel_size)),]
+        # head to inference over query spec via 2D convolutions
+        channels = exponential_linspace_int(start=1, end=nchan, num=depth + 1)
+        self.head = [nn.Unflatten(1, (1, mel_size))]
         for i in range(depth):
             in_chan, out_chan = channels[i: i + 2]
-            self.head.extend([nn.Conv2d(in_chan, out_chan, kernel_size=(5, 5), stride=2, bias=False), nn.ReLU(), nn.BatchNorm2d(out_chan), architectures.ResBlock(out_chan)])
-        self.head = nn.Sequential(*self.head, nn.AdaptiveAvgPool2d((1, None)), nn.Flatten(1))
+            layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3), bias=False)]
+            if (i + 1) % pool_every == 0:
+                layer.append(pools[pooling_type](out_chan, pool_size))
+            layer.append(nn.ReLU())
+            self.head.extend(layer)
+        self.head.append(nn.Flatten(1))
+        self.head = nn.Sequential(*self.head)
+
+        # channels = np.rint(np.linspace(1, nchan, depth + 1)).astype(int)
+        # self.head = [nn.Unflatten(1, (1, mel_size)),]
+        # for i in range(depth):
+        #     in_chan, out_chan = channels[i: i + 2]
+        #     self.head.extend([nn.Conv2d(in_chan, out_chan, kernel_size=(5, 5), stride=2, bias=False), nn.ReLU(), nn.BatchNorm2d(out_chan), architectures.ResBlock(out_chan)])
+        # self.head = nn.Sequential(*self.head, nn.AdaptiveAvgPool2d((1, None)), nn.Flatten(1))
         
         # figure out conv tower output dims and project
         test = torch.zeros(3, mel_size, mel_size)
@@ -262,7 +259,7 @@ class EnergyModel(nn.Module):
         
 if __name__ == '__main__':
     model_name = 'energy'
-    batch_size = 256
+    batch_size = 512
     trainer_args = {'initial_lr': 0.02,
                     'lr_decay_period': 1,
                     'lr_decay_gamma': 0.6,
@@ -272,28 +269,28 @@ if __name__ == '__main__':
                     'patience': 3,
                     'num_tries': 4}
 
-    model_args = {'hidden_dim': 64,
-                  'body_type': 'linear',
-                  'pooling_type': 'max',
-                  'depth': 3,
-                  'mel_size': 64,
-                  'nchan': 64,
-                  'pool_every': 1,
-                  'pool_size': 2,
-                  'body_depth': 3}
-
     # model_args = {'hidden_dim': 64,
     #               'body_type': 'linear',
     #               'pooling_type': 'max',
-    #               'depth': 5,
-    #               'mel_size': 86,
-    #               'nchan': 256,
+    #               'depth': 3,
+    #               'mel_size': 64,
+    #               'nchan': 64,
     #               'pool_every': 1,
     #               'pool_size': 2,
     #               'body_depth': 3}
 
-    train_dataloader = EnergyDataset('train', 0.5).get_dataloader(batch_size)
-    val_dataloader = EnergyDataset('val', 0.5).get_dataloader(batch_size)
+    model_args = {'hidden_dim': 64,
+                  'body_type': 'linear',
+                  'pooling_type': 'max',
+                  'depth': 5,
+                  'mel_size': 86,
+                  'nchan': 256,
+                  'pool_every': 1,
+                  'pool_size': 2,
+                  'body_depth': 3}
+
+    train_dataloader = EnergyDataset('train', 0.5).get_dataloader(batch_size, num_workers=3)
+    val_dataloader = EnergyDataset('val', 0.5).get_dataloader(batch_size, num_workers=2)
 
     model = EnergyModel(**model_args)
     

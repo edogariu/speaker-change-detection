@@ -3,9 +3,10 @@ import torch
 import torch.nn as nn
 
 DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-CONTEXT_DURATION = 2.  # in sec
-QUERY_DURATION = 0.5  # in sec
-SAMPLE_RATE = 16000  # in hz
+
+SPLIT_INTERVALS = {'train': 0.75,
+                   'val': 0.2,
+                   'test': 0.05}
 
 def count_parameters(model: nn.Module):
     return sum(p.numel() for p in model.parameters())

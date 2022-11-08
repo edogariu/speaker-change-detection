@@ -4,22 +4,18 @@ import torch.nn as nn
 import torchaudio.transforms as TA
 import torchvision.transforms as TV
 
-from utils import QUERY_DURATION, SAMPLE_RATE
-
 class AudioPipeline(nn.Module):
     def __init__(
         self,
-        input_len_s: float=QUERY_DURATION,
-        n_mel: int=256,
+        input_freq: int,
+        resample_freq: int,
+        n_mel: int,
         use_augmentation: bool=False,
         use_adaptive_rescaling: bool=False,  # whether to detect blank columns and rescale them away
-        input_freq=SAMPLE_RATE,
-        resample_freq=SAMPLE_RATE,
-        n_fft=512,
+        n_fft=1024,
     ):
         super().__init__()
         
-        self.input_len_s = input_len_s
         self.resample_freq = resample_freq
         self.n_mel = n_mel
         self.use_aug = use_augmentation
@@ -36,11 +32,11 @@ class AudioPipeline(nn.Module):
         self.to_log = TA.AmplitudeToDB()
         self.resize = TV.Resize((n_mel, n_mel))
 
-    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
+    def forward(self, waveform: torch.Tensor):
         with torch.no_grad():
             resampled = self.resample(waveform.float())  # resample the input
             spec = self.spec(resampled)  # convert to power spectrogram
-            if self.use_aug and self.training: spec = self.spec_aug(spec)  # apply SpecAugment
+            if self.use_aug and self.training: spec = self.spec_aug(spec)  # apply time stretch + time/freq masking augmentation
             mel = self.mel_scale(spec)  # convert to mel scale
             mel = self.to_log(mel)  # convert to log-mel scale
 
@@ -53,6 +49,6 @@ class AudioPipeline(nn.Module):
             # normalize
             z = mel.reshape(mel.shape[0], -1)
             mel -= z.mean(dim=1).reshape(-1, 1, 1)
-            mel /= (z.std(dim=1).reshape(-1, 1, 1) + 1e-6)
+            mel /= (z.std(dim=1).reshape(-1, 1, 1) + 1e-6)  # for numerical stability
             return mel  
         

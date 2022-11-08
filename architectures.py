@@ -118,3 +118,4 @@ class AttentionPool2D(nn.Module):
         attn = logits.softmax(dim = -1)
 
         return (x * attn).sum(dim = -1) 
+        
