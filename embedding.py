@@ -12,11 +12,12 @@ import pytorch_metric_learning.losses as pml
 from losses import TripletMarginLoss
 import architectures
 from pipeline import AudioPipeline
-from utils import QUERY_DURATION
+# from utils import QUERY_DURATION
 
 SPLIT_INTERVALS = {'train': 0.75,  # intervals for each split (note that split occurs by speakers here, since that is what we hope to generalize over)
                    'val': 0.2,
                    'test': 0.05}
+QUERY_DURATION = 0.8
 
 # -----------------------------------------------------------------------------------------------
 # ------------------------- DATASETS FOR INITIAL SPEAKER CLASSIFIER TRAINING --------------------
@@ -303,6 +304,77 @@ class VoxTripletDataset(D.Dataset):
     
     def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
         return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
+    
+class VoxContrastiveDataloader():
+    def __init__(self, split: str, batch_size: int):
+        """
+        Creates dataset of pairs of 1 second `.wav` clips from VoxCeleb dataset.
+
+        Parameters
+        ----------
+        split : str
+            which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
+        """
+        assert split in ['train', 'val', 'test', 'all']
+        
+        # get dataframe describing dataset
+        self.df = pd.read_csv('data/vox1/dataset.csv')
+        
+        self.speaker_to_idx = {}
+        for s in np.unique(self.df['speaker']):
+            self.speaker_to_idx[s] = len(self.speaker_to_idx)
+            
+        # split the dataset the same way every time
+        np.random.seed(0)
+        rand_idxs = np.random.permutation(len(self.df))
+        val_idx = int(len(rand_idxs) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(rand_idxs) * SPLIT_INTERVALS['val'])
+        train_idxs, val_idxs, test_idxs = rand_idxs[:val_idx], rand_idxs[val_idx: test_idx], rand_idxs[test_idx:]
+        self.idxs = {'train': train_idxs,
+                     'val': val_idxs,
+                     'test': test_idxs,
+                     'all': rand_idxs}[split]
+        np.random.seed()
+        
+        self.i = 0
+        self.batch_size = batch_size
+        
+        self.length = len(self.idxs)
+        
+    def __len__(self):
+        return self.length // self.batch_size
+    
+    def __iter__(self):
+        self.i = 0
+        np.random.shuffle(self.idxs)
+        return self
+    
+    def __next__(self):
+        if self.i > self.length: raise StopIteration
+        
+        idxs = self.idxs[self.i: self.i + self.batch_size]
+        count = 0
+        
+        datapoints = self.df.iloc[idxs]
+        batch_x = []
+        batch_y = []
+        for datapoint in datapoints.values:
+            _, label, path, length = datapoint
+            label = self.speaker_to_idx[label]
+            sr, anchor = wavfile.read(f'data/vox1/{path}')
+            assert sr == 16000
+            anchor = np.split(anchor, np.arange(0, len(anchor), int(QUERY_DURATION * sr)))[1:-1]
+            assert len(anchor) == np.floor(length / QUERY_DURATION)
+            for a in anchor:
+                batch_x.append((a / 2 ** 15).astype(float))
+                batch_y.append(label)
+            count += 1
+            if len(batch_y) > self.batch_size: break
+        
+        self.i += count
+        batch_x = np.stack(batch_x, axis=0)
+        batch_y = np.stack(batch_y, axis=0)
+
+        return (torch.tensor(batch_x),), torch.tensor(batch_y)
 
 # -----------------------------------------------------------------------------------------------
 # --------------------------------------- THE MODEL ---------------------------------------------
@@ -370,6 +442,7 @@ class Embedding(nn.Module):
         return x
     
     def forward(self, *x):
+        for a in x: print(a.shape)
         if self.emb_mode: return self.emb(*x)# self._triplet_forward(*x)
         else: return self._classify_forward(*x)
     
@@ -401,7 +474,7 @@ if __name__ == '__main__':
     dataset_name = 'VCTK'; assert dataset_name in ['VCTK', 'Vox']
     mode = 'classifier'; assert mode in ['classifier', 'embedding']
         
-    model_name = 'vctk_emb'
+    model_name = 'vox_emb'
     batch_size = 512
     trainer_args = {'initial_lr': 0.01,
                     'lr_decay_period': 3,
@@ -419,10 +492,12 @@ if __name__ == '__main__':
                   'n_chan': 256,
                   'in_freq': 8000 if dataset_name == 'VCTK' else 16000}
 
-    if mode == 'classifier': dataset = VCTKClassifierDataset if dataset_name == 'VCTK' else VoxClassifierDataset
-    else: dataset = VCTKTripletDataset if dataset_name == 'VCTK' else VoxTripletDataset
-    train_dataloader = dataset('train').get_dataloader(batch_size)
-    val_dataloader = dataset('val').get_dataloader(batch_size)
+    # if mode == 'classifier': dataset = VCTKClassifierDataset if dataset_name == 'VCTK' else VoxClassifierDataset
+    # else: dataset = VCTKTripletDataset if dataset_name == 'VCTK' else VoxTripletDataset
+    # train_dataloader = dataset('train').get_dataloader(batch_size)
+    # val_dataloader = dataset('val').get_dataloader(batch_size)
+    train_dataloader = VoxContrastiveDataloader('train', batch_size)
+    val_dataloader = VoxContrastiveDataloader('val', batch_size)
 
     model = Embedding(**model_args)
     

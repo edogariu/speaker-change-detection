@@ -12,7 +12,7 @@ from trainer import Trainer
 import architectures
 from utils import exponential_linspace_int
 
-QUERY_DURATION = 0.8
+QUERY_DURATION = 0.5
 
 SPLIT_INTERVALS = {'train': 0.75,
                    'val': 0.2,
@@ -58,11 +58,11 @@ class EnergyDataset(D.Dataset):
             ids.append(id_to_int[id])
             paths.append('data/VCTK/' + path)
             srs.append(8000)
-        # for d in vox_df.values:
-        #     _, id, path, _ = d
-        #     paths.append('data/vox1/' + path)
-        #     ids.append(id_to_int[str(id)])
-        #     srs.append(16000)
+        for d in vox_df.values:
+            _, id, path, _ = d
+            paths.append('data/vox1/' + path)
+            ids.append(id_to_int[str(id)])
+            srs.append(16000)
         combined['id'] = ids
         combined['path'] = paths
         combined['sr'] = srs
@@ -101,7 +101,7 @@ class EnergyDataset(D.Dataset):
         query = torch.tensor(query)
         if sr == 16000:   # if this is a vox datapoint
             query = query / 2 ** 15
-            # query = self.resample(query)
+            query = self.resample(query)
         rand_index = np.random.randint(query.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
         query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index]
 
@@ -264,8 +264,8 @@ if __name__ == '__main__':
                   'body_type': 'linear',
                   'pooling_type': 'max',
                   'depth': 3,
-                  'mel_size': 86,
-                  'nchan': 192,
+                  'mel_size': 64,
+                  'nchan': 64,
                   'pool_every': 1,
                   'pool_size': 2,
                   'body_depth': 3}
