@@ -8,6 +8,7 @@ from scipy.io import wavfile
 from collections import defaultdict
 
 from trainer import Trainer
+import pytorch_metric_learning.losses as pml
 from losses import TripletMarginLoss
 import architectures
 from pipeline import AudioPipeline
@@ -198,6 +199,8 @@ class VCTKTripletDataset(D.Dataset):
         idx_range = len(anchor) - int(QUERY_DURATION * 8000)
         rand_index = np.random.randint(idx_range)
         anchor = anchor[rand_index: int(QUERY_DURATION * 8000) + rand_index].astype(float)
+
+        return (anchor,), label
         
         # get pos pair
         speaker = self.speakers_to_paths[label]
@@ -274,6 +277,8 @@ class VoxTripletDataset(D.Dataset):
         rand_index = np.random.randint(idx_range)
         anchor = anchor[rand_index: int(QUERY_DURATION * 16000) + rand_index]
         anchor = (anchor / 2 ** 15).astype(float)
+
+        return (anchor,), label
         
         # get pos pair
         speaker = self.speakers_to_paths[label]
@@ -305,6 +310,7 @@ class VoxTripletDataset(D.Dataset):
 
 class Embedding(nn.Module):
     def __init__(self,
+                 in_freq: int,
                  n_layers: int,
                  n_mel: int,
                  emb_dim: int,
@@ -314,13 +320,14 @@ class Embedding(nn.Module):
         
         self.emb_mode = False
         
-        self.args = {'n_layers': n_layers,
+        self.args = {'in_freq': in_freq,
+                     'n_layers': n_layers,
                      'n_mel': n_mel,
                      'emb_dim': emb_dim,
                      'n_classes': n_classes,
                      'n_chan': n_chan}
         
-        self.pipe = AudioPipeline(n_mel=n_mel, n_fft=1024)
+        self.pipe = AudioPipeline(n_mel=n_mel, n_fft=1024, input_freq=in_freq, resample_freq=8000)
         
         channels = np.rint(np.linspace(1, n_chan, n_layers + 1)).astype(int)
         self.conv_tower = [nn.Unflatten(1, (1, n_mel)),]
@@ -363,7 +370,7 @@ class Embedding(nn.Module):
         return x
     
     def forward(self, *x):
-        if self.emb_mode: return self._triplet_forward(*x)
+        if self.emb_mode: return self.emb(*x)# self._triplet_forward(*x)
         else: return self._classify_forward(*x)
     
     @staticmethod
@@ -391,14 +398,14 @@ class Embedding(nn.Module):
         
 if __name__ == '__main__':
     
-    dataset_name = 'Vox'; assert dataset_name in ['VCTK', 'Vox']
-    mode = 'embedding'; assert mode in ['classifier', 'embedding']
+    dataset_name = 'VCTK'; assert dataset_name in ['VCTK', 'Vox']
+    mode = 'classifier'; assert mode in ['classifier', 'embedding']
         
-    model_name = 'vox'
-    batch_size = 128
+    model_name = 'vctk_emb'
+    batch_size = 512
     trainer_args = {'initial_lr': 0.01,
-                    'lr_decay_period': 1,
-                    'lr_decay_gamma': 0.6,
+                    'lr_decay_period': 3,
+                    'lr_decay_gamma': 0.7,
                     'weight_decay': 0.0002}
     train_args = {'num_epochs': 60,
                     'eval_every': 1,
@@ -407,20 +414,22 @@ if __name__ == '__main__':
 
     model_args = {'n_layers': 3,
                   'n_mel': 86,
-                  'emb_dim': 1256,
+                  'emb_dim': 256 if dataset_name == 'VCTK' else 1256,
                   'n_classes': 111 if dataset_name == 'VCTK' else 1211,
-                  'n_chan': 256}
+                  'n_chan': 256,
+                  'in_freq': 8000 if dataset_name == 'VCTK' else 16000}
 
     if mode == 'classifier': dataset = VCTKClassifierDataset if dataset_name == 'VCTK' else VoxClassifierDataset
     else: dataset = VCTKTripletDataset if dataset_name == 'VCTK' else VoxTripletDataset
-    train_dataloader = dataset('train').get_dataloader(batch_size, num_workers=8)
-    val_dataloader = dataset('val').get_dataloader(batch_size, num_workers=4)
+    train_dataloader = dataset('train').get_dataloader(batch_size)
+    val_dataloader = dataset('val').get_dataloader(batch_size)
 
     model = Embedding(**model_args)
     
     if mode == 'embedding': model.toggle_emb_mode()
     
-    criterion = TripletMarginLoss(0.3) if mode == 'embedding' else nn.CrossEntropyLoss()
+    # criterion = TripletMarginLoss(0.3) if mode == 'embedding' else nn.CrossEntropyLoss()
+    criterion = pml.SupConLoss()
     t = Trainer(model_name, model, train_dataloader, val_dataloader, criterion=criterion, **trainer_args)
     t.train(**train_args)
     

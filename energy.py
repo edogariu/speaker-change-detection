@@ -12,9 +12,9 @@ from trainer import Trainer
 import architectures
 from utils import exponential_linspace_int
 
-QUERY_DURATION = 0.5
+QUERY_DURATION = 0.8
 
-SPLIT_INTERVALS = {'train': 0.75,  # intervals for each split (note that split occurs by speakers here, since that is what we hope to generalize over)
+SPLIT_INTERVALS = {'train': 0.75,
                    'val': 0.2,
                    'test': 0.05}
 
@@ -58,11 +58,11 @@ class EnergyDataset(D.Dataset):
             ids.append(id_to_int[id])
             paths.append('data/VCTK/' + path)
             srs.append(8000)
-        for d in vox_df.values:
-            _, id, path, _ = d
-            paths.append('data/vox1/' + path)
-            ids.append(id_to_int[str(id)])
-            srs.append(16000)
+        # for d in vox_df.values:
+        #     _, id, path, _ = d
+        #     paths.append('data/vox1/' + path)
+        #     ids.append(id_to_int[str(id)])
+        #     srs.append(16000)
         combined['id'] = ids
         combined['path'] = paths
         combined['sr'] = srs
@@ -100,10 +100,10 @@ class EnergyDataset(D.Dataset):
         
         query = torch.tensor(query)
         if sr == 16000:   # if this is a vox datapoint
-            query = (query / 2 ** 15).float()
-            query = self.resample(query)
+            query = query / 2 ** 15
+            # query = self.resample(query)
         rand_index = np.random.randint(query.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
-        query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index].float()
+        query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index]
 
         if np.random.rand() < self.prob:  # if we want to yield a pair from the same speaker
             speaker = self.speakers_to_rows[label]
@@ -119,10 +119,10 @@ class EnergyDataset(D.Dataset):
         assert other_sr == _sr
         other = torch.tensor(other)
         if other_sr == 16000:  # if this is a vox datapoint
-            other = (other / 2 ** 15).float()
-            other = self.resample(other)
+            other = other / 2 ** 15
+            # other = self.resample(other)
         rand_index = np.random.randint(other.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
-        other = other[rand_index: int(QUERY_DURATION * 8000) + rand_index].float()
+        other = other[rand_index: int(QUERY_DURATION * 8000) + rand_index]
 
         return (other, query), float(label == other_label)
     
@@ -165,20 +165,27 @@ class EnergyModel(nn.Module):
                     'body_depth': body_depth}
         
         from pipeline import AudioPipeline
-        self.pipe = AudioPipeline(input_len_s=QUERY_DURATION, n_mel=mel_size, use_augmentation=True)
+        self.pipe = AudioPipeline(input_len_s=QUERY_DURATION, n_mel=mel_size, use_augmentation=True, input_freq=8000, resample_freq=8000, n_fft=1024)
 
-        # head to inference over query spec via 2D convolutions
-        channels = exponential_linspace_int(start=1, end=nchan, num=depth + 1)
-        self.head = [nn.Unflatten(1, (1, mel_size))]
+        # # head to inference over query spec via 2D convolutions
+        # channels = exponential_linspace_int(start=1, end=nchan, num=depth + 1)
+        # self.head = [nn.Unflatten(1, (1, mel_size))]
+        # for i in range(depth):
+        #     in_chan, out_chan = channels[i: i + 2]
+        #     layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3), bias=False)]
+        #     if (i + 1) % pool_every == 0:
+        #         layer.append(pools[pooling_type](out_chan, pool_size))
+        #     layer.append(nn.ReLU())
+        #     self.head.extend(layer)
+        # self.head.append(nn.Flatten(1, 3))
+        # self.head = nn.Sequential(*self.head)
+
+        channels = np.rint(np.linspace(1, nchan, depth + 1)).astype(int)
+        self.head = [nn.Unflatten(1, (1, mel_size)),]
         for i in range(depth):
             in_chan, out_chan = channels[i: i + 2]
-            layer = [nn.Conv2d(in_chan, out_chan, kernel_size=(3, 3), bias=False)]
-            if (i + 1) % pool_every == 0:
-                layer.append(pools[pooling_type](out_chan, pool_size))
-            layer.append(nn.ReLU())
-            self.head.extend(layer)
-        self.head.append(nn.Flatten(1, 3))
-        self.head = nn.Sequential(*self.head)
+            self.head.extend([nn.Conv2d(in_chan, out_chan, kernel_size=(5, 5), stride=2, bias=False), nn.ReLU(), nn.BatchNorm2d(out_chan), architectures.ResBlock(out_chan)])
+        self.head = nn.Sequential(*self.head, nn.AdaptiveAvgPool2d((1, None)), nn.Flatten(1))
         
         # figure out conv tower output dims and project
         test = torch.zeros(3, mel_size, mel_size)
@@ -209,7 +216,7 @@ class EnergyModel(nn.Module):
 
         # uncomment this to view spectrograms
         # from librosa import display; import matplotlib.pyplot as plt; display.specshow(sc.cpu().detach().numpy()[0], x_axis='time', y_axis='log', sr=SAMPLE_RATE); plt.show(); exit(0) 
-        # import matplotlib.pyplot as plt; plt.imshow(q1.cpu().detach().numpy()[0]); plt.show(); exit(0)
+        # import matplotlib.pyplot as plt; plt.imshow(q2.cpu().detach().numpy()[0]); plt.show()#; exit(0)
 
         # get output from spectrogram heads
         q1 = self.head(q1)  
@@ -243,8 +250,8 @@ class EnergyModel(nn.Module):
         
 if __name__ == '__main__':
     model_name = 'energy'
-    batch_size = 512
-    trainer_args = {'initial_lr': 0.04,
+    batch_size = 256
+    trainer_args = {'initial_lr': 0.02,
                     'lr_decay_period': 1,
                     'lr_decay_gamma': 0.6,
                     'weight_decay': 0.0002}
@@ -256,12 +263,22 @@ if __name__ == '__main__':
     model_args = {'hidden_dim': 64,
                   'body_type': 'linear',
                   'pooling_type': 'max',
-                  'depth': 6,
-                  'mel_size': 128,
-                  'nchan': 256,
+                  'depth': 3,
+                  'mel_size': 86,
+                  'nchan': 192,
                   'pool_every': 1,
                   'pool_size': 2,
-                  'body_depth': 4}
+                  'body_depth': 3}
+
+    # model_args = {'hidden_dim': 64,
+    #               'body_type': 'linear',
+    #               'pooling_type': 'max',
+    #               'depth': 5,
+    #               'mel_size': 86,
+    #               'nchan': 256,
+    #               'pool_every': 1,
+    #               'pool_size': 2,
+    #               'body_depth': 3}
 
     train_dataloader = EnergyDataset('train', 0.5).get_dataloader(batch_size)
     val_dataloader = EnergyDataset('val', 0.5).get_dataloader(batch_size)
