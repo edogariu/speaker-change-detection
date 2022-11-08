@@ -452,12 +452,12 @@ class Embedding(nn.Module):
         else: return self._classify_forward(*x)
     
     @staticmethod
-    def load(model_path: str):
+    def load(model_path: str, **kwargs):
         """ 
         Load the model from a file.
         """
         params = torch.load(model_path, map_location='cpu')
-        model = Embedding(**params['args'])
+        model = Embedding(**params['args'], **kwargs)
         model.pipe = params['pipe']
         model.load_state_dict(params['state_dict'])
         return model

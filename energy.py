@@ -102,27 +102,39 @@ class EnergyDataset(D.Dataset):
         if sr == 16000:   # if this is a vox datapoint
             query = query / 2 ** 15
             query = self.resample(query)
-        rand_index = np.random.randint(query.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
-        query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index]
-
-        if np.random.rand() < self.prob:  # if we want to yield a pair from the same speaker
-            speaker = self.speakers_to_rows[label]
-            datapoint = self.df.iloc[speaker[np.random.randint(len(speaker))]]
-            assert datapoint['id'] == label
+            if np.random.rand() < self.prob:  # if we want to yield a pair from the same speaker
+                rand_index = np.random.randint(query.shape[0] - 2 * int(QUERY_DURATION * 8000))  # pick random starting point
+                other = query[int(QUERY_DURATION * 8000) + rand_index: 2 * int(QUERY_DURATION * 8000) + rand_index]
+                query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index]
+                other_label = label
+                datapoint = None
+            else: 
+                rand_index = np.random.randint(query.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
+                query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index]
+                datapoint = self.df.iloc[self.idxs[np.random.randint(self.length)]]
         else:
-            datapoint = self.df.iloc[self.idxs[np.random.randint(self.length)]]
+            rand_index = np.random.randint(query.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
+            query = query[rand_index: int(QUERY_DURATION * 8000) + rand_index]
+
+            if np.random.rand() < self.prob:  # if we want to yield a pair from the same speaker
+                speaker = self.speakers_to_rows[label]
+                datapoint = self.df.iloc[speaker[np.random.randint(len(speaker))]]
+                assert datapoint['id'] == label
+            else:
+                datapoint = self.df.iloc[self.idxs[np.random.randint(self.length)]]
         
-        other_label = datapoint['id']
-        other_path = datapoint['path']
-        other_sr = datapoint['sr']
-        _sr, other = wavfile.read(other_path)
-        assert other_sr == _sr
-        other = torch.tensor(other)
-        if other_sr == 16000:  # if this is a vox datapoint
-            other = other / 2 ** 15
-            # other = self.resample(other)
-        rand_index = np.random.randint(other.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
-        other = other[rand_index: int(QUERY_DURATION * 8000) + rand_index]
+        if datapoint is not None:
+            other_label = datapoint['id']
+            other_path = datapoint['path']
+            other_sr = datapoint['sr']
+            _sr, other = wavfile.read(other_path)
+            assert other_sr == _sr
+            other = torch.tensor(other)
+            if other_sr == 16000:  # if this is a vox datapoint
+                other = other / 2 ** 15
+                other = self.resample(other)
+            rand_index = np.random.randint(other.shape[0] - int(QUERY_DURATION * 8000))  # pick random starting point
+            other = other[rand_index: int(QUERY_DURATION * 8000) + rand_index]
 
         return (other, query), float(label == other_label)
     
