@@ -4,54 +4,14 @@ import torch.nn as nn
 import torchvision.transforms as TV
 import torchaudio.transforms as TA
 
-from utils import exponential_linspace_int, DEVICE, QUERY_DURATION, CONTEXT_DURATION, SAMPLE_RATE
+from utils import exponential_linspace_int, DEVICE
 import architectures
 
+QUERY_DURATION = 0.5
+SAMPLE_RATE = 8000
+CONTEXT_DURATION = 2.0
 
-class AudioPipeline(nn.Module):
-    def __init__(
-        self,
-        input_len_s: float=QUERY_DURATION,
-        n_mel: int=256,
-        use_augmentation: bool=False,
-        use_adaptive_rescaling: bool=False,  # whether to detect blank columns and rescale them away
-        input_freq=SAMPLE_RATE,
-        resample_freq=SAMPLE_RATE,
-        n_fft=512,
-    ):
-        super().__init__()
-        
-        self.input_len_s = input_len_s
-        self.resample_freq = resample_freq
-        self.n_mel = n_mel
-        self.use_aug = use_augmentation
-        self.adaptive_rescale = use_adaptive_rescaling
-        
-        self.resample = TA.Resample(orig_freq=input_freq, new_freq=resample_freq)
-        self.spec = TA.Spectrogram(n_fft=n_fft, win_length=int(n_fft / 2.5), power=2, hop_length=int(input_len_s * resample_freq / n_mel))
-        self.spec_aug = torch.nn.Sequential(  # tiny tiny augmentation
-            TA.TimeStretch(np.random.rand() * 0.1 + 0.95, fixed_rate=True),  # random time stretch in (0.95, 1.05)
-            TA.FrequencyMasking(freq_mask_param=10),  # random masking up to `param` idxs
-            TA.TimeMasking(time_mask_param=10),
-        )
-        self.mel_scale = TA.MelScale(n_mels=n_mel, sample_rate=resample_freq, n_stft=n_fft // 2 + 1)
-        self.to_log = TA.AmplitudeToDB()
-        self.resize = TV.Resize((n_mel, n_mel))
-
-    def forward(self, waveform: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            resampled = self.resample(waveform.float())  # resample the input
-            spec = self.spec(resampled)  # convert to power spectrogram
-            # if self.use_aug and self.training: spec = self.spec_aug(spec)  # apply SpecAugment
-            mel = self.mel_scale(spec)  # convert to mel scale
-            mel = self.to_log(mel)  # convert to log-mel scale
-
-            # resize to square (should be close to square anyway), but may contain empty columns on the right
-            if self.adaptive_rescale:
-                mel = torch.cat([self.resize(m[:, :mel.shape[2] - (m.std(dim=0) == 0).sum()].unsqueeze(0)) for m in mel], dim=0)  
-            else: 
-                mel = self.resize(mel) 
-            return ((mel + 100) / 130)  # rescale the values
+from pipeline import AudioPipeline
 
 class SpeakerEmbedding(nn.Module):
     def __init__(self,
@@ -323,9 +283,8 @@ class SpeakerContextModel(nn.Module):
                     'query_pool_size': query_pool_size,
                     'body_depth': body_depth}
         
-        from pipeline import AudioPipeline
-        self.context_pipe = AudioPipeline(input_len_s=CONTEXT_DURATION, n_mel=context_mel_size, use_augmentation=False, use_adaptive_rescaling=True)
-        self.query_pipe = AudioPipeline(input_len_s=QUERY_DURATION, n_mel=query_mel_size, use_augmentation=True)
+        self.context_pipe = AudioPipeline(8000, 8000, n_mel=context_mel_size, use_augmentation=False, use_adaptive_rescaling=True)
+        self.query_pipe = AudioPipeline(8000, 8000, n_mel=query_mel_size, use_augmentation=True)
 
         # head to inference over context spec via 2D convolutions
         context_channels = exponential_linspace_int(start=1, end=context_nchan, num=context_depth + 1)

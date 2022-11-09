@@ -333,6 +333,11 @@ class VoxContrastiveDataloader():
         
         self.length = len(self.idxs)
         
+        self.speakers_to_paths = defaultdict(list)
+        for i in self.idxs:
+            datapoint = self.df.iloc[i]
+            self.speakers_to_paths[self.speaker_to_idx[datapoint['speaker']]].append(datapoint['path'])
+        
     def __len__(self):
         return self.length // self.batch_size
     
@@ -354,6 +359,7 @@ class VoxContrastiveDataloader():
         batch_x = []
         batch_y = []
         for datapoint in datapoints.values:
+            # grab anchor
             _, label, path, length = datapoint
             label = self.speaker_to_idx[label]
             sr, anchor = wavfile.read(f'data/vox1/{path}')
@@ -364,6 +370,18 @@ class VoxContrastiveDataloader():
                 if np.std(a) < 200: continue  # filter out silence
                 batch_x.append((a / 2 ** 15).astype(float))
                 batch_y.append(label)
+                
+            # grab one positive pair
+            speaker = self.speakers_to_paths[label]
+            rand_path = speaker[np.random.randint(len(speaker))]
+            sr, pos = wavfile.read(f'data/vox1/{rand_path}')
+            assert sr == 16000
+            pos = np.split(pos, np.arange(0, len(pos), int(QUERY_DURATION * sr)))[1:-1]
+            for a in pos[:self.batch_size // 3]:  # make sure one clip never takes up more than a third of the batch
+                if np.std(a) < 200: continue  # filter out silence
+                batch_x.append((a / 2 ** 15).astype(float))
+                batch_y.append(label)
+            
             count += 1
             if len(batch_y) > self.batch_size: break
         
@@ -378,7 +396,7 @@ class VoxContrastiveDataloader():
 # --------------------------------------- THE MODEL ---------------------------------------------
 # -----------------------------------------------------------------------------------------------
 
-class Embedding(nn.Module):
+class ContrastiveModel(nn.Module):
     def __init__(self,
                  in_freq: int,
                  n_layers: int,
@@ -449,7 +467,7 @@ class Embedding(nn.Module):
         Load the model from a file.
         """
         params = torch.load(model_path, map_location='cpu')
-        model = Embedding(**params['args'], **kwargs)
+        model = ContrastiveModel(**params['args'], **kwargs)
         model.pipe = params['pipe']
         model.load_state_dict(params['state_dict'])
         return model
@@ -485,7 +503,7 @@ if __name__ == '__main__':
     model_args = {'n_layers': 3,
                   'n_mel': 86,
                   'emb_dim': 256 if dataset_name == 'VCTK' else 256,
-                  'n_classes': 111 if dataset_name == 'VCTK' else 1211,
+                  'n_classes': 111 if dataset_name == 'VCTK' else 111,
                   'n_chan': 256,
                   'in_freq': 8000 if dataset_name == 'VCTK' else 16000}
 
@@ -496,7 +514,7 @@ if __name__ == '__main__':
     train_dataloader = VoxContrastiveDataloader('train', batch_size)
     val_dataloader = VoxContrastiveDataloader('val', batch_size)
 
-    model = Embedding(**model_args)
+    model = ContrastiveModel(**model_args)
     
     if mode == 'embedding': model.toggle_emb_mode()
     

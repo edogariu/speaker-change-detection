@@ -8,6 +8,9 @@ SPLIT_INTERVALS = {'train': 0.75,
                    'val': 0.2,
                    'test': 0.05}
 
+QUERY_DURATION = 0.5
+INPUT_RATE = 8000
+
 def count_parameters(model: nn.Module):
     return sum(p.numel() for p in model.parameters())
 
