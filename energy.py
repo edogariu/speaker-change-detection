@@ -261,11 +261,11 @@ if __name__ == '__main__':
     model_name = 'energy'
     batch_size = 512
     trainer_args = {'initial_lr': 0.02,
-                    'lr_decay_period': 1,
+                    'lr_decay_period': 20,
                     'lr_decay_gamma': 0.6,
                     'weight_decay': 0.0002}
-    train_args = {'num_epochs': 60,
-                    'eval_every': 1,
+    train_args = {'num_epochs': 200,
+                    'eval_every': 3,
                     'patience': 3,
                     'num_tries': 4}
 

@@ -6,9 +6,10 @@ import torch
 import torch.nn as nn
 from scipy.io import wavfile
 from collections import defaultdict
+import tqdm
+import pytorch_metric_learning.losses as pml
 
 from trainer import Trainer
-import pytorch_metric_learning.losses as pml
 from losses import TripletMarginLoss
 import architectures
 from pipeline import AudioPipeline
@@ -311,6 +312,15 @@ class VoxContrastiveDataloader():
         
         # get dataframe describing dataset
         self.df = pd.read_csv('data/vox1/dataset.csv')
+
+        # grab only the 111 most common speakers
+        speaker_counts = self.df['speaker'].value_counts()
+        top_speakers = list(speaker_counts.keys())[:111]
+        idxs = []
+        for i in tqdm.tqdm(range(len(self.df))):
+            speaker = self.df.iloc[i]['speaker']
+            if speaker in top_speakers: idxs.append(i)
+        self.df = self.df.iloc[idxs]
         
         self.speaker_to_idx = {}
         for s in np.unique(self.df['speaker']):
@@ -366,7 +376,10 @@ class VoxContrastiveDataloader():
             assert sr == 16000
             anchor = np.split(anchor, np.arange(0, len(anchor), int(QUERY_DURATION * sr)))[1:-1]
             assert len(anchor) == np.floor(length / QUERY_DURATION)
-            for a in anchor[:self.batch_size // 3]:  # make sure one clip never takes up more than a third of the batch
+            if len(anchor) > self.batch_size // 16: # make sure one clip never takes up more than a 8th of the batch
+                r = np.random.randint(len(anchor) - self.batch_size // 16)
+                anchor = anchor[r: r + self.batch_size // 16]
+            for a in anchor: 
                 if np.std(a) < 200: continue  # filter out silence
                 batch_x.append((a / 2 ** 15).astype(float))
                 batch_y.append(label)
@@ -377,11 +390,13 @@ class VoxContrastiveDataloader():
             sr, pos = wavfile.read(f'data/vox1/{rand_path}')
             assert sr == 16000
             pos = np.split(pos, np.arange(0, len(pos), int(QUERY_DURATION * sr)))[1:-1]
-            for a in pos[:self.batch_size // 3]:  # make sure one clip never takes up more than a third of the batch
+            if len(pos) > self.batch_size // 16: # make sure one clip never takes up more than a 8th of the batch
+                r = np.random.randint(len(pos) - self.batch_size // 16)
+                pos = pos[r: r + self.batch_size // 16]
+            for a in pos:  # make sure one clip never takes up more than a 8th of the batch
                 if np.std(a) < 200: continue  # filter out silence
                 batch_x.append((a / 2 ** 15).astype(float))
                 batch_y.append(label)
-            
             count += 1
             if len(batch_y) > self.batch_size: break
         
@@ -490,18 +505,18 @@ if __name__ == '__main__':
     mode = 'embedding'; assert mode in ['classifier', 'embedding']
         
     model_name = f'{dataset_name.lower()}_emb'
-    batch_size = 512
-    trainer_args = {'initial_lr': 0.016,
-                    'lr_decay_period': 3,
+    batch_size = 368
+    trainer_args = {'initial_lr': 0.02,
+                    'lr_decay_period': 35,
                     'lr_decay_gamma': 0.7,
                     'weight_decay': 0.0002}
-    train_args = {'num_epochs': 60,
-                    'eval_every': 1,
-                    'patience': 3,
-                    'num_tries': 4}
+    train_args = {'num_epochs': 400,
+                    'eval_every': 6,
+                    'patience': 5,
+                    'num_tries': 20}
 
     model_args = {'n_layers': 3,
-                  'n_mel': 86,
+                  'n_mel': 128,
                   'emb_dim': 256 if dataset_name == 'VCTK' else 256,
                   'n_classes': 111 if dataset_name == 'VCTK' else 111,
                   'n_chan': 256,
