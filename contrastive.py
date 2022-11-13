@@ -24,7 +24,7 @@ QUERY_DURATION = 0.5
 # This step of the process is to train a model to classify each speaker with an embedding model with
 # a linear classifier head. We will rip the head off for the next step to get good embedding models.
 
-class VCTKClassifierDataset(D.Dataset):
+class VCTKDataset(D.Dataset):
     def __init__(self, split: str):
         """
         Creates dataset of `.wav` clips from VCTK dataset.
@@ -81,7 +81,7 @@ class VCTKClassifierDataset(D.Dataset):
     def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
         return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
 
-class VoxClassifierDataset(D.Dataset):
+class VoxDataset(D.Dataset):
     def __init__(self, split: str):
         """
         Creates dataset of `.wav` clips from VoxCeleb1 dataset.
@@ -522,7 +522,7 @@ if __name__ == '__main__':
                   'n_chan': 256,
                   'in_freq': 8000 if dataset_name == 'VCTK' else 16000}
 
-    # if mode == 'classifier': dataset = VCTKClassifierDataset if dataset_name == 'VCTK' else VoxClassifierDataset
+    # if mode == 'classifier': dataset = VCTKDataset if dataset_name == 'VCTK' else VoxDataset
     # else: dataset = VCTKTripletDataset if dataset_name == 'VCTK' else VoxTripletDataset
     # train_dataloader = dataset('train').get_dataloader(batch_size)
     # val_dataloader = dataset('val').get_dataloader(batch_size)

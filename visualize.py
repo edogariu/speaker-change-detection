@@ -21,6 +21,30 @@ COLOR = 'blue'
 
 inf = Inferencer(RATE)
 
+def detect_speaker_change():
+    global COLOR
+    ret = False
+    if len(_VARS['context']) >= CONTEXT_WINDOW_SIZE * RATE // 2:
+            if np.var(_VARS['curr']) < 2e-4:
+                ret = False
+            else:
+                a, b, c = inf.infer(_VARS['context'], _VARS['curr'])
+                print(a, b, c)
+                # ret = b > 0.2 + np.mean(_VARS['responseWindow'])
+                ret = b - _VARS['responseWindow'][-1] > 0.75 and a > 0.3
+                _VARS['responseWindow'].append(b)
+                _VARS['responseTimes'].append(time.perf_counter())
+                if _VARS['responseTimes'][-1] - _VARS['responseTimes'][0] > CONTEXT_WINDOW_SIZE / 1.5:   # ensure we are only looking at window of interest
+                    tf = _VARS['responseTimes'][-1] - CONTEXT_WINDOW_SIZE / 1.5
+                    for i, t in enumerate(_VARS['responseTimes']): 
+                        if t > tf: break
+                    _VARS['responseTimes'] = _VARS['responseTimes'][i:]
+                    _VARS['responseWindow'] = _VARS['responseWindow'][i:]
+    COLOR = 'red' if ret else 'blue'
+    return ret
+
+
+
 """ RealTime Audio Waveform plot """
 
 # VARS CONSTS:
@@ -65,30 +89,6 @@ def drawAxis(dataRangeMin=0, dataRangeMax=100):
     graph.DrawLine((0, dataRangeMin), (0, dataRangeMax))
 
 # PYAUDIO STREAM
-
-def detect_speaker_change():
-    global COLOR
-    ret = False
-    if len(_VARS['context']) >= CONTEXT_WINDOW_SIZE * RATE // 2:
-            if np.var(_VARS['curr']) < 2e-4:
-                ret = False
-            else:
-                a, b, c = inf.infer(_VARS['context'], _VARS['curr'])
-                print(a, b, c)
-                # ret = b > 0.2 + np.mean(_VARS['responseWindow'])
-                ret = b - _VARS['responseWindow'][-1] > 0.75 and a > 0.3
-                _VARS['responseWindow'].append(b)
-                _VARS['responseTimes'].append(time.perf_counter())
-                if _VARS['responseTimes'][-1] - _VARS['responseTimes'][0] > CONTEXT_WINDOW_SIZE / 1.5:   # ensure we are only looking at window of interest
-                    tf = _VARS['responseTimes'][-1] - CONTEXT_WINDOW_SIZE / 1.5
-                    for i, t in enumerate(_VARS['responseTimes']): 
-                        if t > tf: break
-                    _VARS['responseTimes'] = _VARS['responseTimes'][i:]
-                    _VARS['responseWindow'] = _VARS['responseWindow'][i:]
-    COLOR = 'red' if ret else 'blue'
-    return ret
-
-
 def stop():
     if _VARS['stream']:
         _VARS['stream'].stop_stream()

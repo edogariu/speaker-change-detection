@@ -55,11 +55,11 @@ class EnergyDataset(D.Dataset):
             ids.append(id_to_int[id])
             paths.append('data/VCTK/' + path)
             srs.append(8000)
-        for d in vox_df.values:
-            _, id, path, _ = d
-            paths.append('data/vox1/' + path)
-            ids.append(id_to_int[str(id)])
-            srs.append(16000)
+        # for d in vox_df.values:
+        #     _, id, path, _ = d
+        #     paths.append('data/vox1/' + path)
+        #     ids.append(id_to_int[str(id)])
+        #     srs.append(16000)
         combined['id'] = ids
         combined['path'] = paths
         combined['sr'] = srs
@@ -257,6 +257,45 @@ class EnergyModel(nn.Module):
         }
         torch.save(params, path)
         
+        
+class PretrainedEnergyModel(nn.Module):
+    def __init__(self,
+                 emb_dim: int,
+                 depth: int
+                 ):
+        super().__init__()
+        
+        self.emb_dim = emb_dim
+        
+        self.args = {'emb_dim': emb_dim,
+                    'depth': depth}
+        
+        from contrastive import ContrastiveModel
+        self.emb = ContrastiveModel.load('checkpoints/models/vctk_emb.pth').toggle_emb_mode().eval()
+        for p in self.emb.parameters():
+            p.requires_grad = False
+        
+        # use body to bring down to final output dimension
+        dims = exponential_linspace_int(2 * self.emb_dim, 1, depth + 1)
+        self.model = [nn.BatchNorm1d(2 * self.emb_dim), nn.Dropout(0.1)]
+        for i in range(depth):
+            in_dim, out_dim = dims[i: i + 2]
+            layer = [nn.Linear(in_dim, out_dim), nn.ReLU()]
+            self.model.extend(layer)
+        self.model[-1] = nn.Flatten(0)  # remove last ReLU
+        self.model = nn.Sequential(*self.model)
+
+    def forward(self, q1, q2):
+        with torch.no_grad():
+            self.emb.eval()
+            emb1 = self.emb.emb(q1)
+            emb2 = self.emb.emb(q2)
+        
+        # project to final dimension
+        cat = torch.cat((emb1, emb2), dim=-1)
+        out = self.model(cat)  
+        return out
+
 if __name__ == '__main__':
     model_name = 'energy'
     batch_size = 512
@@ -289,10 +328,11 @@ if __name__ == '__main__':
                   'pool_size': 2,
                   'body_depth': 3}
 
-    train_dataloader = EnergyDataset('train', 0.5).get_dataloader(batch_size, num_workers=3)
-    val_dataloader = EnergyDataset('val', 0.5).get_dataloader(batch_size, num_workers=2)
+    train_dataloader = EnergyDataset('train', 0.2).get_dataloader(batch_size)
+    val_dataloader = EnergyDataset('val', 0.2).get_dataloader(batch_size)
 
-    model = EnergyModel(**model_args)
+    # model = EnergyModel(**model_args)
+    model = PretrainedEnergyModel(256, 3)
     
     t = Trainer(model_name, model, train_dataloader, val_dataloader, criterion=nn.BCEWithLogitsLoss(), **trainer_args)
     t.train(**train_args)
