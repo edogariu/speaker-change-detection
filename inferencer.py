@@ -2,11 +2,10 @@ import numpy as np
 import torch
 import torchaudio.transforms as T
 
-from utils import INPUT_RATE, QUERY_DURATION
-from contrastive import ContrastiveModel
+from utils import QUERY_DURATION
 from energy import EnergyModel
 
-CONTEXT_WINDOW_SIZE = 3.
+CONTEXT_WINDOW_SIZE = 2.5
 
 def similarity(embA, embB):
     dot = (embA * embB).sum()
@@ -22,34 +21,43 @@ class Inferencer():
         sr : int
             input sampling freq
         """
-        self.vox_emb = ContrastiveModel.load('checkpoints/models/vox_emb.pth').toggle_emb_mode().eval()
-        self.vox_emb.pipe.resample = T.Resample(INPUT_RATE, INPUT_RATE)  # we will be passing in 8k audio :(
-        self.vctk_emb = ContrastiveModel.load('checkpoints/models/vctk_emb.pth').toggle_emb_mode().eval()
-        self.energy = EnergyModel.load('checkpoints/models/energy.pth').eval()
+        self.vctk_energy = EnergyModel.load('checkpoints/models/vctk_energy.pth').eval()
+        self.vox_energy = EnergyModel.load('checkpoints/models/vox_energy.pth copy').eval()
         
-        self.resample = T.Resample(sr, INPUT_RATE)
-        
+        self.vctk_resample = T.Resample(sr, 8000)
+        self.vox_resample = T.Resample(sr, 16000)
+                
     def infer(self, before, curr):
         """
-        Previous context and current window
+        Previous context and current window. Returns 1 if detected speaker change during `curr` and 0 otherwise, as well as a Tuple of the 4 deciding values
         """
-        num_searches = 7
-        
+        num_searches = 12
         with torch.no_grad():
-            before = self.resample(torch.tensor(before).float())
-            curr = self.resample(torch.tensor(curr).float().reshape(1, -1))
+            before_vctk = self.vctk_resample(torch.tensor(before).float())
+            curr_vctk = self.vctk_resample(torch.tensor(curr).float().reshape(1, -1))
             
-            vox_emb_c = self.vox_emb.emb(curr)
-            vctk_emb_c = self.vctk_emb.emb(curr)
+            before_vox = self.vox_resample(torch.tensor(before).float())
+            curr_vox = self.vox_resample(torch.tensor(curr).float().reshape(1, -1))
             
-            vox_emb_dists = []
-            vctk_emb_dists = []
-            energies = []
-            for i in np.linspace(0, len(before) - int(QUERY_DURATION * INPUT_RATE), num_searches).astype(int):
-                b = before[i: i + int(QUERY_DURATION * INPUT_RATE)].reshape(1, -1)
-                vox_emb_dists.append(1 - similarity(self.vox_emb.emb(b), vox_emb_c))
-                vctk_emb_dists.append(1 - similarity(self.vctk_emb.emb(b), vctk_emb_c))
-                energies.append(1 - torch.sigmoid(self.energy(b, curr)).item())
+            vctk_emb = self.vctk_energy.emb.emb(curr_vctk)
+            vox_emb = self.vox_energy.emb.emb(curr_vox)
+
+            vctk_energies = []
+            vctk_dists = []
+            vox_energies = []
+            vox_dists = []
             
-        return np.median(vox_emb_dists), np.median(vctk_emb_dists), np.median(energies)
+            # inference over vctk model
+            for i in np.linspace(0, len(before_vctk) - int(QUERY_DURATION * 8000), num_searches).astype(int):
+                b_vctk = before_vctk[i: i + int(QUERY_DURATION * 8000)].reshape(1, -1)
+                vctk_energies.append(1 - torch.sigmoid(self.vctk_energy(b_vctk, curr_vctk)).item())
+                vctk_dists.append(1 - similarity(vctk_emb, self.vctk_energy.emb.emb(b_vctk)))
+               
+            # inference over vox model
+            for i in np.linspace(0, len(before_vox) - int(QUERY_DURATION * 16000), num_searches).astype(int): 
+                b_vox = before_vox[i: i + int(QUERY_DURATION * 16000)].reshape(1, -1)
+                vox_energies.append(1 - torch.sigmoid(self.vox_energy(b_vox, curr_vox)).item())
+                vox_dists.append(1 - similarity(vox_emb, self.vox_energy.emb.emb(b_vox)))
+
+        return np.median(vctk_energies) * np.median(vox_energies), (np.median(vctk_energies), np.median(vctk_dists), np.median(vox_energies), np.median(vox_dists))
     

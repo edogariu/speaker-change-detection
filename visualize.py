@@ -8,10 +8,10 @@ from utils import QUERY_DURATION
 from inferencer import Inferencer, CONTEXT_WINDOW_SIZE
 
 
-USE_PODCAST = False   # if this is false use mic
+USE_PODCAST = True   # if this is false use mic
 
 # INIT vars:
-CHUNK = 1024  # Samples: 1024,  512, 256, 128
+CHUNK = 512  # Samples: 1024,  512, 256, 128
 RATE = 44100  # Equivalent to Human Hearing at 40 kHz
 INTERVAL = 1  # Sampling Interval in Seconds ie Interval to listen
 TIMEOUT = 10  # In ms for the event loop
@@ -25,21 +25,18 @@ def detect_speaker_change():
     global COLOR
     ret = False
     if len(_VARS['context']) >= CONTEXT_WINDOW_SIZE * RATE // 2:
-            if np.var(_VARS['curr']) < 2e-4:
-                ret = False
-            else:
-                a, b, c = inf.infer(_VARS['context'], _VARS['curr'])
-                print(a, b, c)
-                # ret = b > 0.2 + np.mean(_VARS['responseWindow'])
-                ret = b - _VARS['responseWindow'][-1] > 0.75 and a > 0.3
-                _VARS['responseWindow'].append(b)
-                _VARS['responseTimes'].append(time.perf_counter())
-                if _VARS['responseTimes'][-1] - _VARS['responseTimes'][0] > CONTEXT_WINDOW_SIZE / 1.5:   # ensure we are only looking at window of interest
-                    tf = _VARS['responseTimes'][-1] - CONTEXT_WINDOW_SIZE / 1.5
-                    for i, t in enumerate(_VARS['responseTimes']): 
-                        if t > tf: break
-                    _VARS['responseTimes'] = _VARS['responseTimes'][i:]
-                    _VARS['responseWindow'] = _VARS['responseWindow'][i:]
+        if np.var(_VARS['curr']) < 0:
+            ret = False
+        else:
+            ret = inf.infer(_VARS['context'], _VARS['curr'])
+            # _VARS['responseWindow'].append(b)
+            # _VARS['responseTimes'].append(time.perf_counter())
+            # if _VARS['responseTimes'][-1] - _VARS['responseTimes'][0] > CONTEXT_WINDOW_SIZE / 1.5:   # ensure we are only looking at window of interest
+            #     tf = _VARS['responseTimes'][-1] - CONTEXT_WINDOW_SIZE / 1.5
+            #     for i, t in enumerate(_VARS['responseTimes']): 
+            #         if t > tf: break
+            #     _VARS['responseTimes'] = _VARS['responseTimes'][i:]
+            #     _VARS['responseWindow'] = _VARS['responseWindow'][i:]
     COLOR = 'red' if ret else 'blue'
     return ret
 
@@ -119,7 +116,7 @@ def listen():
                                 rate=RATE,
                                 input=not USE_PODCAST,
                                 output=USE_PODCAST,
-                                output_device_index=3 if USE_PODCAST else None,  # 3 for speakers, 1 for airpods
+                                output_device_index=1 if USE_PODCAST else None,  # 3 for speakers, 1 for airpods
                                 frames_per_buffer=CHUNK,
                                 stream_callback=callback if not USE_PODCAST else None)
     if not USE_PODCAST:
@@ -164,20 +161,20 @@ while True:
     # bit updates the waveform plot, left it here for
     # explanatory purposes, but could be a method.
 
-    elif _VARS['audioData'].size != 0:
-        # Uodate volume meter
-        _VARS['window']['-PROG-'].update(np.amax(_VARS['audioData']))
-        # Redraw plot
-        graph.erase()
-        drawAxis()
+    # elif _VARS['audioData'].size != 0:
+    #     # Uodate volume meter
+    #     _VARS['window']['-PROG-'].update(np.amax(_VARS['audioData']))
+    #     # Redraw plot
+    #     graph.erase()
+    #     drawAxis()
         
 
-        # Here we go through the points in the audioData object and draw them
-        # Note that we are rescaling ( dividing by 100 ) and centering (+50 )
-        # try different values to get a feel for what they do.          
-        for x in range(CHUNK):
-            graph.DrawCircle((x, (_VARS['audioData'][x]/100)+50), 0.4,
-                             line_color=COLOR, fill_color=COLOR)
+    #     # Here we go through the points in the audioData object and draw them
+    #     # Note that we are rescaling ( dividing by 100 ) and centering (+50 )
+    #     # try different values to get a feel for what they do.          
+    #     for x in range(CHUNK):
+    #         graph.DrawCircle((x, (_VARS['audioData'][x]/100)+50), 0.4,
+    #                          line_color=COLOR, fill_color=COLOR)
 
 
 
