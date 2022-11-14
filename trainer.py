@@ -6,6 +6,7 @@ import torch.optim as optim
 import torch.utils.data as D
 
 from utils import count_parameters
+
 class Trainer():
     def __init__(self, 
                  model_name: str,

@@ -1,425 +1,13 @@
-import pandas as pd
 import numpy as np
-import torch.utils.data as D
-import os
 import torch
 import torch.nn as nn
-from scipy.io import wavfile
-from collections import defaultdict
-import tqdm
 import pytorch_metric_learning.losses as pml
 
 from trainer import Trainer
 from losses import TripletMarginLoss
-import architectures
 from pipeline import AudioPipeline
-from utils import SPLIT_INTERVALS
-
-QUERY_DURATION = 0.5
-
-# -----------------------------------------------------------------------------------------------
-# ------------------------- DATASETS FOR INITIAL SPEAKER CLASSIFIER TRAINING --------------------
-# -----------------------------------------------------------------------------------------------
-
-# This step of the process is to train a model to classify each speaker with an embedding model with
-# a linear classifier head. We will rip the head off for the next step to get good embedding models.
-
-class VCTKDataset(D.Dataset):
-    def __init__(self, split: str):
-        """
-        Creates dataset of `.wav` clips from VCTK dataset.
-
-        Parameters
-        ----------
-        split : str
-            which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
-        """
-        super().__init__()
-
-        print(f'Making VCTK {split} dataset')
-        
-        assert split in ['train', 'val', 'test', 'all']
-        
-        # make dataframe describing dataset
-        self.df = pd.DataFrame()
-        paths = [p for p in np.sort(os.listdir('data/VCTK')) if '.wav' in p]
-        self.df['path'] = paths
-        self.df['id_str'] = [p.split('_')[0] for p in paths]
-        id_to_int = {}
-        for id in self.df['id_str']:
-            id_to_int[id] = len(id_to_int)
-        self.df['id'] = [id_to_int[id] for id in self.df['id_str']]
-            
-        # split the dataset the same way every time
-        np.random.seed(0)
-        rand_idxs = np.random.permutation(len(self.df))
-        val_idx = int(len(rand_idxs) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(rand_idxs) * SPLIT_INTERVALS['val'])
-        train_idxs, val_idxs, test_idxs = rand_idxs[:val_idx], rand_idxs[val_idx: test_idx], rand_idxs[test_idx:]
-        self.idxs = {'train': train_idxs,
-                     'val': val_idxs,
-                     'test': test_idxs,
-                     'all': rand_idxs}[split]
-        np.random.seed()
-
-        self.length = len(self.idxs)
-        
-    def __len__(self):
-        return self.length
-    
-    def __getitem__(self, index: int):
-        idx = self.idxs[index]
-        
-        datapoint = self.df.iloc[idx]
-        path = datapoint['path']
-        label = datapoint['id']
-        _, inp = wavfile.read(f'data/VCTK/{path}')
-        
-        idx_range = len(inp) - int(QUERY_DURATION * 8000)
-        rand_index = np.random.randint(idx_range)
-        inp = inp[rand_index: int(QUERY_DURATION * 8000) + rand_index].astype(float)
-        
-        return (inp,), label
-    
-    def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
-        return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
-
-class VoxDataset(D.Dataset):
-    def __init__(self, split: str):
-        """
-        Creates dataset of `.wav` clips from VoxCeleb1 dataset.
-
-        Parameters
-        ----------
-        split : str
-            which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
-        """
-        super().__init__()
-
-        print(f'Making VoxCeleb1 {split} dataset')
-        
-        assert split in ['train', 'val', 'test', 'all']
-        
-        # get dataframe describing dataset
-        self.df = pd.read_csv('data/vox1/dataset.csv')
-
-        # grab only the 111 most common speakers
-        speaker_counts = self.df['speaker'].value_counts()
-        top_speakers = list(speaker_counts.keys())[:111]
-        idxs = []
-        for i in tqdm.tqdm(range(len(self.df))):
-            speaker = self.df.iloc[i]['speaker']
-            if speaker in top_speakers: idxs.append(i)
-        self.df = self.df.iloc[idxs]
-        
-        self.speaker_to_idx = {}
-        for s in np.unique(self.df['speaker']):
-            self.speaker_to_idx[s] = len(self.speaker_to_idx)
-        print(f'{len(self.speaker_to_idx)} unique speakers!')
-            
-        # split the dataset the same way every time
-        np.random.seed(0)
-        rand_idxs = np.random.permutation(len(self.df))
-        val_idx = int(len(rand_idxs) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(rand_idxs) * SPLIT_INTERVALS['val'])
-        train_idxs, val_idxs, test_idxs = rand_idxs[:val_idx], rand_idxs[val_idx: test_idx], rand_idxs[test_idx:]
-        self.idxs = {'train': train_idxs,
-                     'val': val_idxs,
-                     'test': test_idxs,
-                     'all': rand_idxs}[split]
-        np.random.seed()
-
-        self.length = len(self.idxs)
-        
-    def __len__(self):
-        return self.length
-    
-    def __getitem__(self, index: int):
-        idx = self.idxs[index]
-        
-        datapoint = self.df.iloc[idx]
-        path = datapoint['path']
-        label = self.speaker_to_idx[datapoint['speaker']]
-        
-        _, inp = wavfile.read(f'data/vox1/{path}')
-        
-        idx_range = len(inp) - int(QUERY_DURATION * 16000)
-        rand_index = np.random.randint(idx_range)
-        inp = inp[rand_index: int(QUERY_DURATION * 16000) + rand_index]
-        
-        inp = (inp / 2 ** 15).astype(float)
-        return (inp,), label
-    
-    def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
-        return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
-    
-
-# -----------------------------------------------------------------------------------------------
-# ------------------------- DATASETS FOR CONTRASTIVE EMBEDDING TRAINING -------------------------
-# -----------------------------------------------------------------------------------------------
-    
-class VCTKTripletDataset(D.Dataset):
-    def __init__(self, split: str):
-        """
-        Creates dataset of pairs of 1 second `.wav` clips from filtered VCTK dataset.
-
-        Parameters
-        ----------
-        split : str
-            which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
-        """
-        super().__init__()
-        
-        assert split in ['train', 'val', 'test', 'all']
-        
-        # make dataframe describing dataset
-        self.df = pd.DataFrame()
-        paths = [p for p in np.sort(os.listdir('data/VCTK')) if '.wav' in p]
-        self.df['path'] = paths
-        self.df['id_str'] = [p.split('_')[0] for p in paths]
-        id_to_int = {}
-        for id in self.df['id_str']:
-            id_to_int[id] = len(id_to_int)
-        self.df['id'] = [id_to_int[id] for id in self.df['id_str']]
-        
-        # split the dataset the same way every time
-        np.random.seed(0)
-        rand_idxs = np.random.permutation(len(self.df))
-        val_idx = int(len(rand_idxs) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(rand_idxs) * SPLIT_INTERVALS['val'])
-        train_idxs, val_idxs, test_idxs = rand_idxs[:val_idx], rand_idxs[val_idx: test_idx], rand_idxs[test_idx:]
-        self.idxs = {'train': train_idxs,
-                     'val': val_idxs,
-                     'test': test_idxs,
-                     'all': rand_idxs}[split]
-        np.random.seed()
-        
-        self.speakers_to_paths = defaultdict(list)
-        for i in self.idxs:
-            datapoint = self.df.iloc[i]
-            self.speakers_to_paths[datapoint['id']].append(datapoint['path'])
-        self.length = len(self.idxs)
-        
-    def __len__(self):
-        return self.length
-    
-    def __getitem__(self, index: int):
-        idx = self.idxs[index]
-        
-        # get anchor
-        datapoint = self.df.iloc[idx]
-        path = datapoint['path']
-        label = datapoint['id']
-        _, anchor = wavfile.read(f'data/VCTK/{path}')
-        idx_range = len(anchor) - int(QUERY_DURATION * 8000)
-        rand_index = np.random.randint(idx_range)
-        anchor = anchor[rand_index: int(QUERY_DURATION * 8000) + rand_index].astype(float)
-
-        # get pos pair
-        speaker = self.speakers_to_paths[label]
-        rand_path = speaker[np.random.randint(len(speaker))]
-        _, pos = wavfile.read(f'data/VCTK/{rand_path}')
-        idx_range = len(pos) - int(QUERY_DURATION * 8000)
-        rand_index = np.random.randint(idx_range)
-        pos = pos[rand_index: int(QUERY_DURATION * 8000) + rand_index].astype(float)
-        
-        # get neg pair
-        speaker_list = list(self.speakers_to_paths.keys())
-        speaker = self.speakers_to_paths[speaker_list[np.random.randint(len(speaker_list))]]
-        rand_path = speaker[np.random.randint(len(speaker))]
-        _, neg = wavfile.read(f'data/VCTK/{rand_path}')
-        idx_range = len(neg) - int(QUERY_DURATION * 8000)
-        rand_index = np.random.randint(idx_range)
-        neg = neg[rand_index: int(QUERY_DURATION * 8000) + rand_index].astype(float)
-        return (anchor, pos, neg), -1
-    
-    def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
-        return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
-    
-class VoxTripletDataset(D.Dataset):
-    def __init__(self, split: str):
-        """
-        Creates dataset of pairs of 1 second `.wav` clips from VoxCeleb dataset.
-
-        Parameters
-        ----------
-        split : str
-            which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
-        """
-        super().__init__()
-        
-        assert split in ['train', 'val', 'test', 'all']
-        
-        # get dataframe describing dataset
-        self.df = pd.read_csv('data/vox1/dataset.csv')
-        
-        self.speaker_to_idx = {}
-        for s in np.unique(self.df['speaker']):
-            self.speaker_to_idx[s] = len(self.speaker_to_idx)
-            
-        # split the dataset the same way every time
-        np.random.seed(0)
-        rand_idxs = np.random.permutation(len(self.df))
-        val_idx = int(len(rand_idxs) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(rand_idxs) * SPLIT_INTERVALS['val'])
-        train_idxs, val_idxs, test_idxs = rand_idxs[:val_idx], rand_idxs[val_idx: test_idx], rand_idxs[test_idx:]
-        self.idxs = {'train': train_idxs,
-                     'val': val_idxs,
-                     'test': test_idxs,
-                     'all': rand_idxs}[split]
-        np.random.seed()
-        
-        self.speakers_to_paths = defaultdict(list)
-        for i in self.idxs:
-            datapoint = self.df.iloc[i]
-            self.speakers_to_paths[self.speaker_to_idx[datapoint['speaker']]].append(datapoint['path'])
-
-        self.length = len(self.idxs)
-        
-    def __len__(self):
-        return self.length
-    
-    def __getitem__(self, index: int):
-        idx = self.idxs[index]
-        
-        # get anchor
-        datapoint = self.df.iloc[idx]
-        path = datapoint['path']
-        label = self.speaker_to_idx[datapoint['speaker']]
-        _, anchor = wavfile.read(f'data/vox1/{path}')
-        idx_range = len(anchor) - int(QUERY_DURATION * 16000)
-        rand_index = np.random.randint(idx_range)
-        anchor = anchor[rand_index: int(QUERY_DURATION * 16000) + rand_index]
-        anchor = (anchor / 2 ** 15).astype(float)
-
-        # get pos pair
-        speaker = self.speakers_to_paths[label]
-        rand_path = speaker[np.random.randint(len(speaker))]
-        _, pos = wavfile.read(f'data/vox1/{rand_path}')
-        idx_range = len(pos) - int(QUERY_DURATION * 16000)
-        rand_index = np.random.randint(idx_range)
-        pos = pos[rand_index: int(QUERY_DURATION * 16000) + rand_index].astype(float)
-        pos = (pos / 2 ** 15).astype(float)
-        
-        # get neg pair
-        speaker_list = list(self.speakers_to_paths.keys())
-        speaker = self.speakers_to_paths[speaker_list[np.random.randint(len(speaker_list))]]
-        rand_path = speaker[np.random.randint(len(speaker))]
-        _, neg = wavfile.read(f'data/vox1/{rand_path}')
-        idx_range = len(neg) - int(QUERY_DURATION * 16000)
-        rand_index = np.random.randint(idx_range)
-        neg = neg[rand_index: int(QUERY_DURATION * 16000) + rand_index].astype(float)
-        neg = (neg / 2 ** 15).astype(float)
-
-        return (anchor, pos, neg), -1
-    
-    def get_dataloader(self, batch_size: int, shuffle=True, pin_memory=True, num_workers=0):
-        return D.DataLoader(self, batch_size, shuffle=shuffle, drop_last=True, pin_memory=pin_memory, num_workers=num_workers)
-    
-class VoxContrastiveDataloader():
-    def __init__(self, split: str, batch_size: int):
-        """
-        Creates dataset of pairs of 1 second `.wav` clips from VoxCeleb dataset.
-
-        Parameters
-        ----------
-        split : str
-            which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
-        """
-        assert split in ['train', 'val', 'test', 'all']
-        
-        # get dataframe describing dataset
-        self.df = pd.read_csv('data/vox1/dataset.csv')
-
-        # grab only the 111 most common speakers
-        speaker_counts = self.df['speaker'].value_counts()
-        top_speakers = list(speaker_counts.keys())[:111]
-        idxs = []
-        for i in tqdm.tqdm(range(len(self.df))):
-            speaker = self.df.iloc[i]['speaker']
-            if speaker in top_speakers: idxs.append(i)
-        self.df = self.df.iloc[idxs]
-        
-        self.speaker_to_idx = {}
-        for s in np.unique(self.df['speaker']):
-            self.speaker_to_idx[s] = len(self.speaker_to_idx)
-            
-        # split the dataset the same way every time
-        np.random.seed(0)
-        rand_idxs = np.random.permutation(len(self.df))
-        val_idx = int(len(rand_idxs) * SPLIT_INTERVALS['train']); test_idx = val_idx + int(len(rand_idxs) * SPLIT_INTERVALS['val'])
-        train_idxs, val_idxs, test_idxs = rand_idxs[:val_idx], rand_idxs[val_idx: test_idx], rand_idxs[test_idx:]
-        self.idxs = {'train': train_idxs,
-                     'val': val_idxs,
-                     'test': test_idxs,
-                     'all': rand_idxs}[split]
-        np.random.seed()
-        
-        self.i = 0
-        self.num_batches_yielded = 0
-        self.batch_size = batch_size
-        
-        self.length = len(self.idxs)
-        
-        self.speakers_to_paths = defaultdict(list)
-        for i in self.idxs:
-            datapoint = self.df.iloc[i]
-            self.speakers_to_paths[self.speaker_to_idx[datapoint['speaker']]].append(datapoint['path'])
-        
-    def __len__(self):
-        return self.length // self.batch_size
-    
-    def __iter__(self):
-        self.i = 0
-        self.num_batches_yielded = 0
-        np.random.shuffle(self.idxs)
-        return self
-    
-    def __next__(self):
-        idxs = self.idxs[self.i: self.i + self.batch_size]
-
-        if self.num_batches_yielded >= len(self) or len(idxs) < self.batch_size: 
-            raise StopIteration
-
-        count = 0
-        
-        datapoints = self.df.iloc[idxs]
-        batch_x = []
-        batch_y = []
-        for datapoint in datapoints.values:
-            # grab anchor
-            _, label, path, length = datapoint
-            label = self.speaker_to_idx[label]
-            sr, anchor = wavfile.read(f'data/vox1/{path}')
-            assert sr == 16000
-            anchor = np.split(anchor, np.arange(0, len(anchor), int(QUERY_DURATION * sr)))[1:-1]
-            assert len(anchor) == np.floor(length / QUERY_DURATION)
-            if len(anchor) > self.batch_size // 16: # make sure one clip never takes up more than a 8th of the batch
-                r = np.random.randint(len(anchor) - self.batch_size // 16)
-                anchor = anchor[r: r + self.batch_size // 16]
-            for a in anchor: 
-                if np.std(a) < 200: continue  # filter out silence
-                batch_x.append((a / 2 ** 15).astype(float))
-                batch_y.append(label)
-                
-            # grab one positive pair
-            speaker = self.speakers_to_paths[label]
-            rand_path = speaker[np.random.randint(len(speaker))]
-            sr, pos = wavfile.read(f'data/vox1/{rand_path}')
-            assert sr == 16000
-            pos = np.split(pos, np.arange(0, len(pos), int(QUERY_DURATION * sr)))[1:-1]
-            if len(pos) > self.batch_size // 16: # make sure one clip never takes up more than a 8th of the batch
-                r = np.random.randint(len(pos) - self.batch_size // 16)
-                pos = pos[r: r + self.batch_size // 16]
-            for a in pos:  # make sure one clip never takes up more than a 8th of the batch
-                if np.std(a) < 200: continue  # filter out silence
-                batch_x.append((a / 2 ** 15).astype(float))
-                batch_y.append(label)
-            count += 1
-            if len(batch_y) > self.batch_size: break
-        
-        self.i += count
-        self.num_batches_yielded += 1
-        batch_x = np.stack(batch_x, axis=0)
-        batch_y = np.stack(batch_y, axis=0)
-
-        return (torch.tensor(batch_x),), torch.tensor(batch_y)
+import architectures
+import datasets
 
 # -----------------------------------------------------------------------------------------------
 # --------------------------------------- THE MODEL ---------------------------------------------
@@ -436,6 +24,7 @@ class ContrastiveModel(nn.Module):
         super().__init__()
         
         self.emb_mode = False
+        self.emb_dim = emb_dim
         
         self.args = {'in_freq': in_freq,
                      'n_layers': n_layers,
@@ -444,7 +33,7 @@ class ContrastiveModel(nn.Module):
                      'n_classes': n_classes,
                      'n_chan': n_chan}
         
-        self.pipe = AudioPipeline(n_mel=n_mel, n_fft=1024, input_freq=in_freq, resample_freq=8000)
+        self.pipe = AudioPipeline(n_mel=n_mel, n_fft=1024, input_freq=in_freq, resample_freq=in_freq)
         
         channels = np.rint(np.linspace(1, n_chan, n_layers + 1)).astype(int)
         self.conv_tower = [nn.Unflatten(1, (1, n_mel)),]
@@ -487,7 +76,7 @@ class ContrastiveModel(nn.Module):
         return x
     
     def forward(self, *x):
-        if self.emb_mode: return self.emb(*x)# self._triplet_forward(*x)
+        if self.emb_mode: return self.emb(*x) # self._triplet_forward(*x)
         else: return self._classify_forward(*x)
     
     @staticmethod
@@ -497,7 +86,6 @@ class ContrastiveModel(nn.Module):
         """
         params = torch.load(model_path, map_location='cpu')
         model = ContrastiveModel(**params['args'], **kwargs)
-        model.pipe = params['pipe']
         model.load_state_dict(params['state_dict'])
         return model
 
@@ -508,17 +96,17 @@ class ContrastiveModel(nn.Module):
 
         params = {
             'args': self.args,   # args to remake the model object
-            'pipe': self.pipe,   # the vocab object
             'state_dict': self.state_dict()   # the model params
         }
         torch.save(params, path)
         
 if __name__ == '__main__':
     
-    dataset_name = 'Vox'; assert dataset_name in ['VCTK', 'Vox']
-    mode = 'embedding'; assert mode in ['classifier', 'embedding']
+    dataset_name = 'vox'; assert dataset_name in ['vctk', 'vox']
+    mode = 'embedding'; assert mode in ['classifier', 'triplet', 'embedding']
+    num_speakers = 10000   # 10000 to use all speakers
         
-    model_name = f'{dataset_name.lower()}_emb_111'
+    model_name = f'{dataset_name}_emb'
     batch_size = 368
     trainer_args = {'initial_lr': 0.02,
                     'lr_decay_period': 12,
@@ -528,27 +116,33 @@ if __name__ == '__main__':
                     'eval_every': 3,
                     'patience': 5,
                     'num_tries': 20}
-
     model_args = {'n_layers': 3,
                   'n_mel': 128,
-                  'emb_dim': 256 if dataset_name == 'VCTK' else 256,
-                  'n_classes': 111 if dataset_name == 'VCTK' else 111,
+                  'emb_dim': 256,
+                  'n_classes': min(num_speakers, 111) if dataset_name == 'VCTK' else min(num_speakers, 1211),
                   'n_chan': 256,
                   'in_freq': 8000 if dataset_name == 'VCTK' else 16000}
 
-    # if mode == 'classifier': dataset = VCTKDataset if dataset_name == 'VCTK' else VoxDataset
-    # else: dataset = VCTKTripletDataset if dataset_name == 'VCTK' else VoxTripletDataset
-    # train_dataloader = dataset('train').get_dataloader(batch_size, num_workers=3)
-    # val_dataloader = dataset('val').get_dataloader(batch_size, num_workers=2)
-    train_dataloader = VoxContrastiveDataloader('train', batch_size)
-    val_dataloader = VoxContrastiveDataloader('val', batch_size)
+    if mode == 'classifier': 
+        criterion = nn.CrossEntropyLoss()
+        dataset = datasets.VCTKDataset if dataset_name == 'VCTK' else datasets.VoxDataset
+        train_dataloader = dataset('train').get_dataloader(batch_size, num_workers=3)
+        val_dataloader = dataset('val').get_dataloader(batch_size, num_workers=2)
+    elif mode == 'triplet': 
+        criterion = TripletMarginLoss(0.1)
+        dataset = datasets.VCTKTripletDataset if dataset_name == 'VCTK' else datasets.VoxTripletDataset
+        train_dataloader = dataset('train').get_dataloader(batch_size, num_workers=3)
+        val_dataloader = dataset('val').get_dataloader(batch_size, num_workers=2)
+    else:
+        criterion = pml.SupConLoss()
+        train_dataloader = datasets.VoxContrastiveDataloader('train', batch_size)
+        val_dataloader = datasets.VoxContrastiveDataloader('val', batch_size)
 
-    # model = ContrastiveModel(**model_args)
-    model = ContrastiveModel.load('checkpoints/models/vox_emb_classifier.pth')
+    model = ContrastiveModel(**model_args)
+    # model = ContrastiveModel.load('checkpoints/models/vox_emb_classifier.pth')
     
-    if mode == 'embedding': model.toggle_emb_mode()
+    if mode != 'classifier': model.toggle_emb_mode()
     
-    criterion = pml.SupConLoss() if mode == 'embedding' else nn.CrossEntropyLoss()
     t = Trainer(model_name, model, train_dataloader, val_dataloader, criterion=criterion, **trainer_args)
     t.train(**train_args)
     
