@@ -5,8 +5,6 @@ import torchaudio.transforms as T
 from utils import QUERY_DURATION
 from energy import EnergyModel
 
-CONTEXT_WINDOW_SIZE = 2.5
-
 def similarity(embA, embB):
     dot = (embA * embB).sum()
     return (dot / (torch.norm(embA) * torch.norm(embB))).item()
