@@ -393,23 +393,24 @@ class VoxContrastiveDataloader():
                 r = np.random.randint(len(anchor) - self.batch_size // 16)
                 anchor = anchor[r: r + self.batch_size // 16]
             for a in anchor: 
-                if np.std(a) < 200: continue  # filter out silence
+                if np.std(a) < 75: continue  # filter out silence
                 batch_x.append((a / 2 ** 15).astype(float))
                 batch_y.append(label)
                 
-            # grab one positive pair
-            speaker = self.speakers_to_paths[label]
-            rand_path = speaker[np.random.randint(len(speaker))]
-            sr, pos = wavfile.read(f'data/vox1/{rand_path}')
-            assert sr == 16000
-            pos = np.split(pos, np.arange(0, len(pos), int(QUERY_DURATION * sr)))[1:-1]
-            if len(pos) > self.batch_size // 16: # make sure one clip never takes up more than a 8th of the batch
-                r = np.random.randint(len(pos) - self.batch_size // 16)
-                pos = pos[r: r + self.batch_size // 16]
-            for a in pos:  # make sure one clip never takes up more than a 8th of the batch
-                if np.std(a) < 200: continue  # filter out silence
-                batch_x.append((a / 2 ** 15).astype(float))
-                batch_y.append(label)
+            # # grab one positive pair
+            # speaker = self.speakers_to_paths[label]
+            # rand_path = speaker[np.random.randint(len(speaker))]
+            # sr, pos = wavfile.read(f'data/vox1/{rand_path}')
+            # assert sr == 16000
+            # pos = np.split(pos, np.arange(0, len(pos), int(QUERY_DURATION * sr)))[1:-1]
+            # if len(pos) > self.batch_size // 16: # make sure one clip never takes up more than a 8th of the batch
+            #     r = np.random.randint(len(pos) - self.batch_size // 16)
+            #     pos = pos[r: r + self.batch_size // 16]
+            # for a in pos:  # make sure one clip never takes up more than a 8th of the batch
+            #     if np.std(a) < 200: continue  # filter out silence
+            #     batch_x.append((a / 2 ** 15).astype(float))
+            #     batch_y.append(label)
+
             count += 1
             if len(batch_y) > self.batch_size: break
         

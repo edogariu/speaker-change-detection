@@ -86,7 +86,7 @@ class ContrastiveModel(nn.Module):
         """
         params = torch.load(model_path, map_location='cpu')
         model = ContrastiveModel(**params['args'], **kwargs)
-        model.load_state_dict(params['state_dict'])
+        model.load_state_dict(params['state_dict'], strict=False)
         return model
 
     def save(self, path: str):
@@ -104,10 +104,10 @@ if __name__ == '__main__':
     
     dataset_name = 'vox'; assert dataset_name in ['vctk', 'vox']
     mode = 'embedding'; assert mode in ['classifier', 'triplet', 'embedding']
-    num_speakers = 10000   # 10000 to use all speakers
+    num_speakers = 111   # 10000 to use all speakers
         
     model_name = f'{dataset_name}_emb'
-    batch_size = 368
+    batch_size = 512
     trainer_args = {'initial_lr': 0.02,
                     'lr_decay_period': 12,
                     'lr_decay_gamma': 0.7,
@@ -117,7 +117,7 @@ if __name__ == '__main__':
                     'patience': 5,
                     'num_tries': 20}
     model_args = {'n_layers': 3,
-                  'n_mel': 128,
+                  'n_mel': 86,
                   'emb_dim': 256,
                   'n_classes': min(num_speakers, 111) if dataset_name == 'VCTK' else min(num_speakers, 1211),
                   'n_chan': 256,
@@ -126,8 +126,8 @@ if __name__ == '__main__':
     if mode == 'classifier': 
         criterion = nn.CrossEntropyLoss()
         dataset = datasets.VCTKDataset if dataset_name == 'VCTK' else datasets.VoxDataset
-        train_dataloader = dataset('train').get_dataloader(batch_size, num_workers=3)
-        val_dataloader = dataset('val').get_dataloader(batch_size, num_workers=2)
+        train_dataloader = dataset('train', num_speakers=num_speakers).get_dataloader(batch_size, num_workers=3)
+        val_dataloader = dataset('val', num_speakers=num_speakers).get_dataloader(batch_size, num_workers=2)
     elif mode == 'triplet': 
         criterion = TripletMarginLoss(0.1)
         dataset = datasets.VCTKTripletDataset if dataset_name == 'VCTK' else datasets.VoxTripletDataset
@@ -135,11 +135,14 @@ if __name__ == '__main__':
         val_dataloader = dataset('val').get_dataloader(batch_size, num_workers=2)
     else:
         criterion = pml.SupConLoss()
-        train_dataloader = datasets.VoxContrastiveDataloader('train', batch_size)
-        val_dataloader = datasets.VoxContrastiveDataloader('val', batch_size)
+        if dataset_name == 'vox':
+            train_dataloader = datasets.VoxContrastiveDataloader('train', batch_size, num_speakers=num_speakers)
+            val_dataloader = datasets.VoxContrastiveDataloader('val', batch_size, num_speakers=num_speakers)
+        else:
+            train_dataloader = datasets.VCTKDataset('train', num_speakers=num_speakers).get_dataloader(batch_size, num_workers=3)
+            val_dataloader = datasets.VCTKDataset('val', num_speakers=num_speakers).get_dataloader(batch_size, num_workers=2)
 
     model = ContrastiveModel(**model_args)
-    # model = ContrastiveModel.load('checkpoints/models/vox_emb_classifier.pth')
     
     if mode != 'classifier': model.toggle_emb_mode()
     
