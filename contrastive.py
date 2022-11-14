@@ -35,6 +35,8 @@ class VCTKDataset(D.Dataset):
             which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
         """
         super().__init__()
+
+        print(f'Making VCTK {split} dataset')
         
         assert split in ['train', 'val', 'test', 'all']
         
@@ -92,15 +94,27 @@ class VoxDataset(D.Dataset):
             which split to make dataset from. must be one of `['train', 'val', 'test', 'all']`
         """
         super().__init__()
+
+        print(f'Making VoxCeleb1 {split} dataset')
         
         assert split in ['train', 'val', 'test', 'all']
         
         # get dataframe describing dataset
         self.df = pd.read_csv('data/vox1/dataset.csv')
+
+        # grab only the 111 most common speakers
+        speaker_counts = self.df['speaker'].value_counts()
+        top_speakers = list(speaker_counts.keys())[:111]
+        idxs = []
+        for i in tqdm.tqdm(range(len(self.df))):
+            speaker = self.df.iloc[i]['speaker']
+            if speaker in top_speakers: idxs.append(i)
+        self.df = self.df.iloc[idxs]
         
         self.speaker_to_idx = {}
         for s in np.unique(self.df['speaker']):
             self.speaker_to_idx[s] = len(self.speaker_to_idx)
+        print(f'{len(self.speaker_to_idx)} unique speakers!')
             
         # split the dataset the same way every time
         np.random.seed(0)
@@ -504,14 +518,14 @@ if __name__ == '__main__':
     dataset_name = 'Vox'; assert dataset_name in ['VCTK', 'Vox']
     mode = 'embedding'; assert mode in ['classifier', 'embedding']
         
-    model_name = f'{dataset_name.lower()}_emb'
+    model_name = f'{dataset_name.lower()}_emb_111'
     batch_size = 368
     trainer_args = {'initial_lr': 0.02,
-                    'lr_decay_period': 35,
+                    'lr_decay_period': 12,
                     'lr_decay_gamma': 0.7,
                     'weight_decay': 0.0002}
     train_args = {'num_epochs': 400,
-                    'eval_every': 6,
+                    'eval_every': 3,
                     'patience': 5,
                     'num_tries': 20}
 
@@ -524,12 +538,13 @@ if __name__ == '__main__':
 
     # if mode == 'classifier': dataset = VCTKDataset if dataset_name == 'VCTK' else VoxDataset
     # else: dataset = VCTKTripletDataset if dataset_name == 'VCTK' else VoxTripletDataset
-    # train_dataloader = dataset('train').get_dataloader(batch_size)
-    # val_dataloader = dataset('val').get_dataloader(batch_size)
+    # train_dataloader = dataset('train').get_dataloader(batch_size, num_workers=3)
+    # val_dataloader = dataset('val').get_dataloader(batch_size, num_workers=2)
     train_dataloader = VoxContrastiveDataloader('train', batch_size)
     val_dataloader = VoxContrastiveDataloader('val', batch_size)
 
-    model = ContrastiveModel(**model_args)
+    # model = ContrastiveModel(**model_args)
+    model = ContrastiveModel.load('checkpoints/models/vox_emb_classifier.pth')
     
     if mode == 'embedding': model.toggle_emb_mode()
     

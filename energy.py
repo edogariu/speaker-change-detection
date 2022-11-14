@@ -98,7 +98,7 @@ class EnergyDataset(D.Dataset):
         query = torch.tensor(query)
         if sr == 16000:   # if this is a vox datapoint
             query = query / 2 ** 15
-            query = self.resample(query)
+            # query = self.resample(query)
             if np.random.rand() < self.prob:  # if we want to yield a pair from the same speaker
                 rand_index = np.random.randint(query.shape[0] - 2 * int(QUERY_DURATION * SAMPLE_RATE))  # pick random starting point
                 other = query[int(QUERY_DURATION * SAMPLE_RATE) + rand_index: 2 * int(QUERY_DURATION * SAMPLE_RATE) + rand_index]
@@ -129,7 +129,7 @@ class EnergyDataset(D.Dataset):
             other = torch.tensor(other)
             if other_sr == 16000:  # if this is a vox datapoint
                 other = other / 2 ** 15
-                other = self.resample(other)
+                # other = self.resample(other)
             rand_index = np.random.randint(other.shape[0] - int(QUERY_DURATION * SAMPLE_RATE))  # pick random starting point
             other = other[rand_index: int(QUERY_DURATION * SAMPLE_RATE) + rand_index]
 
@@ -296,15 +296,36 @@ class PretrainedEnergyModel(nn.Module):
         out = self.model(cat)  
         return out
 
+    @staticmethod
+    def load(model_path: str):
+        """ 
+        Load the model from a file.
+        """
+        params = torch.load(model_path, map_location='cpu')
+        model = PretrainedEnergyModel(**params['args'])
+        model.load_state_dict(params['state_dict'], strict=False)
+        return model
+
+    def save(self, path: str):
+        """ 
+        Save the model to a file.
+        """
+
+        params = {
+            'args': self.args,   # args to remake the model object
+            'state_dict': self.state_dict()   # the model params
+        }
+        torch.save(params, path)
+
 if __name__ == '__main__':
-    model_name = 'energy'
+    model_name = 'vctk_energy'
     batch_size = 512
     trainer_args = {'initial_lr': 0.02,
-                    'lr_decay_period': 20,
+                    'lr_decay_period': 4,
                     'lr_decay_gamma': 0.6,
                     'weight_decay': 0.0002}
     train_args = {'num_epochs': 200,
-                    'eval_every': 3,
+                    'eval_every': 2,
                     'patience': 3,
                     'num_tries': 4}
 
@@ -328,8 +349,8 @@ if __name__ == '__main__':
                   'pool_size': 2,
                   'body_depth': 3}
 
-    train_dataloader = EnergyDataset('train', 0.2).get_dataloader(batch_size)
-    val_dataloader = EnergyDataset('val', 0.2).get_dataloader(batch_size)
+    train_dataloader = EnergyDataset('train', 0.3).get_dataloader(batch_size, num_workers=3)
+    val_dataloader = EnergyDataset('val', 0.3).get_dataloader(batch_size, num_workers=2)
 
     # model = EnergyModel(**model_args)
     model = PretrainedEnergyModel(256, 3)
